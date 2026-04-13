@@ -1,26 +1,46 @@
 cmake_minimum_required(VERSION 3.14.3)
 project(htp_ops C CXX ASM)
-# cmake_policy(SET CMP0115 OLD)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-if(HEXAGON_SDK_ROOT)
-    include(${HEXAGON_SDK_ROOT}/build/cmake/hexagon_fun.cmake)
-else()
-    include(${HEXAGON_CMAKE_ROOT}/hexagon_fun.cmake)
+# 从环境变量导入到 CMake 变量
+if(NOT DEFINED HEXAGON_SDK_ROOT AND DEFINED ENV{HEXAGON_SDK_ROOT})
+    set(HEXAGON_SDK_ROOT "$ENV{HEXAGON_SDK_ROOT}")
 endif()
+
+if(NOT DEFINED HEXAGON_CMAKE_ROOT AND DEFINED ENV{HEXAGON_CMAKE_ROOT})
+    set(HEXAGON_CMAKE_ROOT "$ENV{HEXAGON_CMAKE_ROOT}")
+endif()
+
+message(STATUS "HEXAGON_SDK_ROOT=${HEXAGON_SDK_ROOT}")
+message(STATUS "HEXAGON_CMAKE_ROOT=${HEXAGON_CMAKE_ROOT}")
+
+if(HEXAGON_SDK_ROOT AND EXISTS "${HEXAGON_SDK_ROOT}/build/cmake/hexagon_fun.cmake")
+    include("${HEXAGON_SDK_ROOT}/build/cmake/hexagon_fun.cmake")
+elseif(HEXAGON_CMAKE_ROOT AND EXISTS "${HEXAGON_CMAKE_ROOT}/hexagon_fun.cmake")
+    include("${HEXAGON_CMAKE_ROOT}/hexagon_fun.cmake")
+else()
+    message(FATAL_ERROR
+        "Cannot find hexagon_fun.cmake. "
+        "Please set HEXAGON_SDK_ROOT or HEXAGON_CMAKE_ROOT correctly."
+    )
+endif()
+
 set(ignoreVar ${DEPENDENCIES}${V})
 
 # NOTE(hzx): QAIC generated code are located in ${CMAKE_CURRENT_BINARY_DIR}
 set(common_incs
     ${CMAKE_CURRENT_SOURCE_DIR}/include/
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}
     ${HEXAGON_SDK_ROOT}/incs/
     ${HEXAGON_SDK_ROOT}/incs/stddef/
     ${HEXAGON_SDK_ROOT}/rtos/qurt/
     ${HEXAGON_SDK_ROOT}/utils/examples/
 )
+
 include_directories(${common_incs})
 
 if(${OS_TYPE} MATCHES "HLOS")
@@ -75,6 +95,10 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/vtcm_mgr.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn_sp_hdim.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/add.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/div.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/sub.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mpy.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mat_mul.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/precompute_table.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/rms_norm.c

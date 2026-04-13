@@ -92,6 +92,70 @@ int execute_op_simple(struct OpComputeRequest *req) {
       }
       break;
 
+    case HTP_OPS_ADD_F32:
+      {
+        auto   params = reinterpret_cast<BinaryElemwiseF32Params *>(req->payload);
+        size_t size   = params->ne0 * params->ne1 * sizeof(float);
+
+        add_buffer(out_bufs, params->dst, size);
+        add_buffer(in_bufs, params->src0, size);
+        add_buffer(in_bufs, params->src1, size);
+
+        validate_in_bufs();
+        ret = hvx_add_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), (const float *) IN_PTR(1), params->ne0,
+                          params->ne1);
+        validate_out_bufs();
+      }
+      break;
+
+    case HTP_OPS_SUB_F32:
+      {
+        auto   params = reinterpret_cast<BinaryElemwiseF32Params *>(req->payload);
+        size_t size   = params->ne0 * params->ne1 * sizeof(float);
+
+        add_buffer(out_bufs, params->dst, size);
+        add_buffer(in_bufs, params->src0, size);
+        add_buffer(in_bufs, params->src1, size);
+
+        validate_in_bufs();
+        ret = hvx_sub_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), (const float *) IN_PTR(1), params->ne0,
+                          params->ne1);
+        validate_out_bufs();
+      }
+      break;
+
+    case HTP_OPS_MPY_F32:
+      {
+        auto   params = reinterpret_cast<BinaryElemwiseF32Params *>(req->payload);
+        size_t size   = params->ne0 * params->ne1 * sizeof(float);
+
+        add_buffer(out_bufs, params->dst, size);
+        add_buffer(in_bufs, params->src0, size);
+        add_buffer(in_bufs, params->src1, size);
+
+        validate_in_bufs();
+        ret = hvx_mpy_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), (const float *) IN_PTR(1), params->ne0,
+                          params->ne1);
+        validate_out_bufs();
+      }
+      break;
+
+    case HTP_OPS_DIV_F32:
+      {
+        auto   params = reinterpret_cast<BinaryElemwiseF32Params *>(req->payload);
+        size_t size   = params->ne0 * params->ne1 * sizeof(float);
+
+        add_buffer(out_bufs, params->dst, size);
+        add_buffer(in_bufs, params->src0, size);
+        add_buffer(in_bufs, params->src1, size);
+
+        validate_in_bufs();
+        ret = hvx_div_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), (const float *) IN_PTR(1), params->ne0,
+                          params->ne1);
+        validate_out_bufs();
+      }
+      break;
+
     case HTP_OPS_MAT_MUL_PERMUTED_W16A32:
       {
         auto params = reinterpret_cast<MatMulParams *>(req->payload);
