@@ -21,15 +21,13 @@ static inline void hvx_add_f32_inner(float *restrict dst, const float *restrict 
       }
     }
 
-    *pv_out++ = Q6_Vqf32_vadd_VsfVsf(*pv_in0++, *pv_in1++);
+    *pv_out++ = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vadd_VsfVsf(*pv_in0++, *pv_in1++));
   }
 
   const int n_done = n_vecs * 32;
   for (int i = n_done; i < ne0; ++i) {
     dst[i] = src0[i] + src1[i];
   }//处理未对齐内容
-  
-  dst = Q6_Vsf_equals_Vqf32(dst);
 }
 
 int hvx_add_f32(float *restrict dst, const float *restrict src0, const float *restrict src1, int ne0, int ne1) {
