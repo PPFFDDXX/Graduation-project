@@ -417,6 +417,7 @@ static void test_binary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int 
     goto end;
   }
 
+  int64_t cpu_t0 = get_time_us();
   switch (op) {
     case HTP_OPS_ADD_F32:
       add_f32_ref(ref_dst, src0, src1, ne0, ne1);
@@ -434,9 +435,13 @@ static void test_binary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int 
       fprintf(stderr, "Unsupported binary op: %u\n", op);
       goto end;
   }
+  int64_t cpu_elapsed_us = get_time_us() - cpu_t0;
+
+  fprintf(stderr, "%s CPU(ref) took %ld us, DSP(CHAN) %ld us\n", binary_op_name(op),
+          cpu_elapsed_us, chan_elapsed_us);
 
   int   n_failed = 0;
-  float tol      = (op == HTP_OPS_DIV_F32) ? 1e-4f : 1e-5f;
+  float tol      = (op == HTP_OPS_DIV_F32) ? 1e-5f : 1e-6f;
   for (int i = 0; i < n_elems; ++i) {
     if (fabs(ref_dst[i] - dsp_dst[i]) > tol) {
       n_failed++;
