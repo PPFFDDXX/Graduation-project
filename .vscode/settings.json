@@ -1,9 +1,0 @@
-{
-  "cmake.configureSettings": {
-    "V": "73",
-    "OS_TYPE": "QURT"
-  },
-  "cmake.configureEnvironment": {
-    "HEXAGON_SDK_ROOT": "/home/pfdx/Hexagon_SDK/6.4.0.2"
-  }
-}
