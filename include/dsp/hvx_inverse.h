@@ -5,12 +5,10 @@
 static inline HVX_Vector hvx_vec_inverse_f32(HVX_Vector v_sf) {
 
     HVX_Vector inv_aprox_sf = Q6_V_vsplat_R(0x7EEEEBB3);
-    //得到2.0的向量广播形式
-    union { float f; uint32_t i; } u_two = { .f = 2.0f };
-    HVX_Vector two_sf = Q6_V_vsplat_R(u_two.i);
+    
+    HVX_Vector two_sf = hvx_vec_splat_f32(2.0);//得到2.0的向量广播形式
 
-    // 得到初始近似向量
-    HVX_Vector i_sf = Q6_Vw_vsub_VwVw(inv_aprox_sf, v_sf);
+    HVX_Vector i_sf = Q6_Vw_vsub_VwVw(inv_aprox_sf, v_sf);// 得到初始近似向量
 
     HVX_Vector r_qf;
     // 进行三次迭代

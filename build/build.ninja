@@ -47,7 +47,7 @@ cmake_ninja_workdir = /home/pfdx/my_code/htp-ops-lib/build/
 #############################################
 # Order-only phony target for htp_ops_skel
 
-build cmake_object_order_depends_target_htp_ops_skel: phony || htp_ops.h htp_ops_skel.c htp_ops_stub.c qidlTargethtp_opsooOIi
+build cmake_object_order_depends_target_htp_ops_skel: phony || htp_ops.h htp_ops_skel.c htp_ops_stub.c qidlTargethtp_opsgaGpd
 
 build CMakeFiles/htp_ops_skel.dir/htp_ops_skel.c.o: C_COMPILER__htp_ops_skel_unscanned_Debug /home/pfdx/my_code/htp-ops-lib/build/htp_ops_skel.c || cmake_object_order_depends_target_htp_ops_skel
   DEFINES = -Dhtp_ops_skel_EXPORTS
@@ -209,7 +209,7 @@ build CMakeFiles/htp_ops_skel.dir/src/dsp/ops/mm_benchmark.c.o: C_COMPILER__htp_
 #############################################
 # Link the shared library libhtp_ops_skel.so
 
-build libhtp_ops_skel.so: CXX_SHARED_LIBRARY_LINKER__htp_ops_skel_Debug CMakeFiles/htp_ops_skel.dir/htp_ops_skel.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/commu.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/power.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/hmx_mgr.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/worker_pool.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/mmap_mgr.cc.o CMakeFiles/htp_ops_skel.dir/src/dsp/op_executor.cc.o CMakeFiles/htp_ops_skel.dir/src/dsp/op_tests.cc.o CMakeFiles/htp_ops_skel.dir/src/dsp/vtcm_mgr.cc.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/flash_attn_sp_hdim.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/flash_attn.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/add.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/div.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/sub.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/mpy.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/mat_mul.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/precompute_table.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/rms_norm.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/mm_benchmark.c.o | //G0/pic/libc++abi.so.1 //G0/pic/libc++.so.1 || qidlTargethtp_opsooOIi
+build libhtp_ops_skel.so: CXX_SHARED_LIBRARY_LINKER__htp_ops_skel_Debug CMakeFiles/htp_ops_skel.dir/htp_ops_skel.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/commu.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/power.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/hmx_mgr.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/worker_pool.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/mmap_mgr.cc.o CMakeFiles/htp_ops_skel.dir/src/dsp/op_executor.cc.o CMakeFiles/htp_ops_skel.dir/src/dsp/op_tests.cc.o CMakeFiles/htp_ops_skel.dir/src/dsp/vtcm_mgr.cc.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/flash_attn_sp_hdim.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/flash_attn.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/add.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/div.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/sub.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/mpy.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/mat_mul.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/precompute_table.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/rms_norm.c.o CMakeFiles/htp_ops_skel.dir/src/dsp/ops/mm_benchmark.c.o | //G0/pic/libc++abi.so.1 //G0/pic/libc++.so.1 || qidlTargethtp_opsgaGpd
   LANGUAGE_COMPILE_FLAGS = -mhmx -g
   LINK_LIBRARIES = -Wl,-rpath,//G0/pic  -lc++abi  -lc++
   LINK_PATH = -L//G0/pic
@@ -223,9 +223,9 @@ build libhtp_ops_skel.so: CXX_SHARED_LIBRARY_LINKER__htp_ops_skel_Debug CMakeFil
 
 
 #############################################
-# Utility command for qidlTargethtp_opsooOIi
+# Utility command for qidlTargethtp_opsgaGpd
 
-build qidlTargethtp_opsooOIi: phony CMakeFiles/qidlTargethtp_opsooOIi htp_ops_skel.c htp_ops_stub.c htp_ops.h
+build qidlTargethtp_opsgaGpd: phony CMakeFiles/qidlTargethtp_opsgaGpd htp_ops_skel.c htp_ops_stub.c htp_ops.h
 
 
 #############################################
@@ -261,9 +261,9 @@ build htp_ops_skel.c htp_ops_stub.c htp_ops.h | ${cmake_ninja_workdir}htp_ops_sk
 
 
 #############################################
-# Phony custom command for CMakeFiles/qidlTargethtp_opsooOIi
+# Phony custom command for CMakeFiles/qidlTargethtp_opsgaGpd
 
-build CMakeFiles/qidlTargethtp_opsooOIi | ${cmake_ninja_workdir}CMakeFiles/qidlTargethtp_opsooOIi: phony htp_ops_skel.c htp_ops_stub.c htp_ops.h
+build CMakeFiles/qidlTargethtp_opsgaGpd | ${cmake_ninja_workdir}CMakeFiles/qidlTargethtp_opsgaGpd: phony htp_ops_skel.c htp_ops_stub.c htp_ops.h
 
 # =============================================================================
 # Target aliases.
