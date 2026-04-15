@@ -99,6 +99,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/div.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/sub.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mpy.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/relu.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/leaky_relu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mat_mul.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/precompute_table.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/rms_norm.c
@@ -113,6 +115,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/sub.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mpy.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/div.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/relu.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/leaky_relu.c
     )
 
     # Enable HMX inline assembly

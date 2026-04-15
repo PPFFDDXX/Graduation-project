@@ -328,6 +328,27 @@ static void div_f32_ref(float *dst, const float *src0, const float *src1, int ne
   binary_elemwise_f32_ref(dst, src0, src1, ne0, ne1, BINARY_REF_OP_DIV);
 }
 
+static void relu_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+    for (int i = 0; i < ne0; ++i) {
+      y[i] = x[i] > 0.0f ? x[i] : 0.0f;
+    }
+  }
+}
+
+static void leaky_relu_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  const float alpha = 0.01f;
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+    for (int i = 0; i < ne0; ++i) {
+      y[i] = x[i] > 0.0f ? x[i] : (alpha * x[i]);
+    }
+  }
+}
+
 static const char *binary_op_name(uint32_t op) {
   switch (op) {
     case HTP_OPS_ADD_F32:
@@ -469,6 +490,126 @@ end:
   fprintf(stderr, passed ? "%s passed\n" : "%s failed\n", binary_op_name(op));
 }
 
+static const char *unary_op_name(uint32_t op) {
+  switch (op) {
+    case HTP_OPS_RELU_F32:
+      return "relu_f32";
+    case HTP_OPS_LEAKY_RELU_F32:
+      return "leaky_relu_f32";
+    default:
+      return "unknown";
+  }
+}
+
+static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int ne1) {
+  struct MessageHeader *msg = (struct MessageHeader *) chan;
+
+  float *src, *dsp_dst, *ref_dst;
+  int    fd_src, fd_dst;
+  int    err, passed = 0;
+
+  src = dsp_dst = ref_dst = NULL;
+  size_t size           = align_up((size_t) ne0 * ne1 * sizeof(float), 128);
+
+  if (alloc_shared_mem_buf((void **) &src, &fd_src, size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &dsp_dst, &fd_dst, size)) {
+    goto end;
+  }
+  ref_dst = (float *) malloc(size);
+  if (!ref_dst) {
+    goto end;
+  }
+
+  int n_elems = ne0 * ne1;
+  for (int i = 0; i < n_elems; ++i) {
+    src[i] = (rand() % 20000) * 2e-3f - 20.0f;
+  }
+
+  {
+    struct RequestHeader req_hdr = {
+      .state = 0,
+      .type  = REQUEST_TYPE_OP_COMPUTE,
+    };
+    struct OpComputeRequest compute_req = {
+      .op = op,
+    };
+    struct UnaryElemwiseF32Params params = {
+      .dst = { .fd = fd_dst, .offset = 0, },
+      .src = { .fd = fd_src, .offset = 0, },
+      .ne0 = ne0,
+      .ne1 = ne1,
+    };
+
+    size_t req_size     = sizeof(req_hdr) + sizeof(compute_req) + sizeof(params);
+    msg->state.d        = 0;
+    msg->n_reqs         = 1;
+    msg->req_offsets[0] = message_header_size(msg);
+    msg->req_offsets[1] = msg->req_offsets[0] + req_size;
+
+    uint8_t *p                  = (uint8_t *) message_header_get_request_ptr(msg, 0);
+    *(struct RequestHeader *) p = req_hdr;
+    p += sizeof(struct RequestHeader);
+    *(struct OpComputeRequest *) p = compute_req;
+    p += sizeof(struct OpComputeRequest);
+    *(struct UnaryElemwiseF32Params *) p = params;
+  }
+
+  int64_t t0      = get_time_us();
+  msg->state.v[0] = 1;
+  while (msg->state.v[1] != 1) {
+  }
+  int64_t chan_elapsed_us = get_time_us() - t0;
+  fprintf(stderr, "%s CHAN took %ld us\n", unary_op_name(op), chan_elapsed_us);
+
+  err = message_header_get_request_ptr(msg, 0)->state;
+  if (err != 0) {
+    fprintf(stderr, "%s: CHAN failed with %x\n", unary_op_name(op), err);
+    goto end;
+  }
+
+  int64_t cpu_t0 = get_time_us();
+  switch (op) {
+    case HTP_OPS_RELU_F32:
+      relu_f32_ref(ref_dst, src, ne0, ne1);
+      break;
+    case HTP_OPS_LEAKY_RELU_F32:
+      leaky_relu_f32_ref(ref_dst, src, ne0, ne1);
+      break;
+    default:
+      fprintf(stderr, "Unsupported unary op: %u\n", op);
+      goto end;
+  }
+  int64_t cpu_elapsed_us = get_time_us() - cpu_t0;
+
+  fprintf(stderr, "%s CPU(ref) took %ld us, DSP(CHAN) %ld us\n", unary_op_name(op), cpu_elapsed_us, chan_elapsed_us);
+
+  int n_failed = 0;
+  for (int i = 0; i < n_elems; ++i) {
+    if (fabs(ref_dst[i] - dsp_dst[i]) > 1e-6f) {
+      n_failed++;
+      if (n_failed < 16) {
+        fprintf(stderr, "%s: index %d, ref val=%.6f, dsp val=%.6f\n", unary_op_name(op), i, ref_dst[i], dsp_dst[i]);
+      }
+    }
+  }
+  passed = (n_failed == 0);
+
+end:
+  if (src) {
+    free_shared_mem_buf(src, fd_src, size);
+  }
+  if (dsp_dst) {
+    free_shared_mem_buf(dsp_dst, fd_dst, size);
+  }
+  if (ref_dst) {
+    free(ref_dst);
+  }
+
+  fprintf(stderr, passed ? "%s passed\n" : "%s failed\n", unary_op_name(op));
+}
+
 static void test_mat_mul_rpc(remote_handle64 handle) {
   float *activation, *output;
   __fp16 *weight;
@@ -570,6 +711,8 @@ int main(int argc, char **argv) {
   test_binary_elemwise_f32_chan(chan, HTP_OPS_SUB_F32, 4096, 2);
   test_binary_elemwise_f32_chan(chan, HTP_OPS_MPY_F32, 4096, 2);
   test_binary_elemwise_f32_chan(chan, HTP_OPS_DIV_F32, 4096, 2);
+  test_unary_elemwise_f32_chan(chan, HTP_OPS_RELU_F32, 4096, 2);
+  test_unary_elemwise_f32_chan(chan, HTP_OPS_LEAKY_RELU_F32, 4096, 2);
 
   htp_ops_destroy_channel(get_global_handle());
 
