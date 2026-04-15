@@ -106,6 +106,15 @@ else()
     )
     build_idl(include/htp_ops.idl htp_ops_skel)
 
+    # Standalone simulator test executable (no host RPC dependency)
+    add_executable(htp_ops_sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/sim_tests_main.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/add.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/sub.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mpy.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/div.c
+    )
+
     # Enable HMX inline assembly
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mhmx")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mhmx")
@@ -115,6 +124,6 @@ else()
     target_link_libraries(htp_ops_skel ${HEXAGON_LIB_DIR}/${HEXAGON_ARCH}/G0/pic/libc++.so.1)
 
     # Copy binaries from ship to CMAKE_CURRENT_BINARY_DIR folder
-    copy_binaries(htp_ops_skel)
+    copy_binaries(htp_ops_skel htp_ops_sim)
 
 endif()

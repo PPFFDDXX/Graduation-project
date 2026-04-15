@@ -16,12 +16,12 @@ static inline void hvx_sub_f32_inner(float *restrict dst, const float *restrict 
       int prefetch_idx = i + PREFETCH_N_VECS;
       if (prefetch_idx < n_vecs) {
         int prefetch_n_vecs = Q6_R_min_RR(n_vecs - prefetch_idx, PREFETCH_N_VECS);
-        l2fetch(pv_in0 + PREFETCH_N_VECS, VLEN, VLEN, prefetch_n_vecs, 0);
-        l2fetch(pv_in1 + PREFETCH_N_VECS, VLEN, VLEN, prefetch_n_vecs, 0);
+        l2fetch(pv_in0 + prefetch_idx, VLEN, VLEN, prefetch_n_vecs, 0);
+        l2fetch(pv_in1 + prefetch_idx, VLEN, VLEN, prefetch_n_vecs, 0);
       }
     }
 
-    *pv_out++ = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vadd_VsfVsf(*pv_in0++, *pv_in1++));
+    *pv_out++ = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vsub_VsfVsf(*pv_in0++, *pv_in1++));
   }
 
   const int n_done = n_vecs * 32;

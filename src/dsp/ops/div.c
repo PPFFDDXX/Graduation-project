@@ -17,8 +17,8 @@ static inline void hvx_div_f32_inner(float *restrict dst, const float *restrict 
       int prefetch_idx = i + PREFETCH_N_VECS;
       if (prefetch_idx < n_vecs) {
         int prefetch_n_vecs = Q6_R_min_RR(n_vecs - prefetch_idx, PREFETCH_N_VECS);
-        l2fetch(pv_in0 + PREFETCH_N_VECS, VLEN, VLEN, prefetch_n_vecs, 0);
-        l2fetch(pv_in1 + PREFETCH_N_VECS, VLEN, VLEN, prefetch_n_vecs, 0);
+        l2fetch(pv_in0 + prefetch_idx, VLEN, VLEN, prefetch_n_vecs, 0);
+        l2fetch(pv_in1 + prefetch_idx, VLEN, VLEN, prefetch_n_vecs, 0);
       }
     }
 

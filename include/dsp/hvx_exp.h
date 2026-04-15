@@ -4,8 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "hvx_internal.h"
-#include "hmx_utils.h"
+#include "dsp/hvx_internal.h"
+#include "dsp/hvx_utils.h"
 
 #define HVX_EXP_COEFF_5 (0x39506967)  // 1/(7!)
 #define HVX_EXP_COEFF_4 (0x3AB743CE)  // 1/(6!)

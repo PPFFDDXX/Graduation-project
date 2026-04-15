@@ -1,12 +1,12 @@
 #pragma once
 
-#include "hvx_internal.h"
+#include "dsp/hvx_utils.h"
 
 static inline HVX_Vector hvx_vec_inverse_f32(HVX_Vector v_sf) {
 
     HVX_Vector inv_aprox_sf = Q6_V_vsplat_R(0x7EEEEBB3);
     
-    HVX_Vector two_sf = hvx_vec_splat_f32(2.0);//得到2.0的向量广播形式
+    HVX_Vector two_sf = hvx_vec_splat_f32(2.0f);  // 得到2.0的向量广播形式
 
     HVX_Vector i_sf = Q6_Vw_vsub_VwVw(inv_aprox_sf, v_sf);// 得到初始近似向量
 

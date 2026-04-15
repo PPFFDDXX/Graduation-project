@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <hexagon_types.h>
 
 #include "dsp/dma_utils.h"
 #include "dsp/hmx_mgr.h"

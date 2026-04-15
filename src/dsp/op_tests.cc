@@ -9,6 +9,7 @@
 
 #include "dsp/hmx_mgr.h"
 #include "dsp/hvx_math.h"
+#include "dsp/hvx_convert.h"
 #include "dsp/ops.h"
 #include "dsp/vtcm_mgr.h"
 
