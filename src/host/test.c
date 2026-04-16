@@ -349,6 +349,26 @@ static void leaky_relu_f32_ref(float *dst, const float *src, int ne0, int ne1) {
   }
 }
 
+static void sigmoid_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+    for (int i = 0; i < ne0; ++i) {
+      y[i] = 1.0f / (1.0f + expf(-x[i]));
+    }
+  }
+}
+
+static void silu_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+    for (int i = 0; i < ne0; ++i) {
+      y[i] = x[i] / (1.0f + expf(-x[i]));
+    }
+  }
+}
+
 static const char *binary_op_name(uint32_t op) {
   switch (op) {
     case HTP_OPS_ADD_F32:
@@ -496,6 +516,10 @@ static const char *unary_op_name(uint32_t op) {
       return "relu_f32";
     case HTP_OPS_LEAKY_RELU_F32:
       return "leaky_relu_f32";
+    case HTP_OPS_SIGMOID_F32:
+      return "sigmoid_f32";
+    case HTP_OPS_SILU_F32:
+      return "silu_f32";
     default:
       return "unknown";
   }
@@ -577,6 +601,12 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
     case HTP_OPS_LEAKY_RELU_F32:
       leaky_relu_f32_ref(ref_dst, src, ne0, ne1);
       break;
+    case HTP_OPS_SIGMOID_F32:
+      sigmoid_f32_ref(ref_dst, src, ne0, ne1);
+      break;
+    case HTP_OPS_SILU_F32:
+      silu_f32_ref(ref_dst, src, ne0, ne1);
+      break;
     default:
       fprintf(stderr, "Unsupported unary op: %u\n", op);
       goto end;
@@ -585,9 +615,14 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
 
   fprintf(stderr, "%s CPU(ref) took %ld us, DSP(CHAN) %ld us\n", unary_op_name(op), cpu_elapsed_us, chan_elapsed_us);
 
+  float tol = 1e-6f;
+  if (op == HTP_OPS_SIGMOID_F32 || op == HTP_OPS_SILU_F32) {
+    tol = 3e-5f;
+  }
+
   int n_failed = 0;
   for (int i = 0; i < n_elems; ++i) {
-    if (fabs(ref_dst[i] - dsp_dst[i]) > 1e-6f) {
+    if (fabs(ref_dst[i] - dsp_dst[i]) > tol) {
       n_failed++;
       if (n_failed < 16) {
         fprintf(stderr, "%s: index %d, ref val=%.6f, dsp val=%.6f\n", unary_op_name(op), i, ref_dst[i], dsp_dst[i]);
@@ -713,6 +748,8 @@ int main(int argc, char **argv) {
   test_binary_elemwise_f32_chan(chan, HTP_OPS_DIV_F32, 4096, 2);
   test_unary_elemwise_f32_chan(chan, HTP_OPS_RELU_F32, 4096, 2);
   test_unary_elemwise_f32_chan(chan, HTP_OPS_LEAKY_RELU_F32, 4096, 2);
+  test_unary_elemwise_f32_chan(chan, HTP_OPS_SIGMOID_F32, 4096, 2);
+  test_unary_elemwise_f32_chan(chan, HTP_OPS_SILU_F32, 4096, 2);
 
   htp_ops_destroy_channel(get_global_handle());
 

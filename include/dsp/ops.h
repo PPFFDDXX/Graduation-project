@@ -26,6 +26,10 @@ int hvx_relu_f32(float *restrict dst, const float *restrict src, int ne0, int ne
 
 int hvx_leaky_relu_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
 
+int hvx_sigmoid_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
+
+int hvx_silu_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
+
 int hmx_mat_mul_permuted_w16a32(float *restrict dst, const float *activation, const __fp16 *permuted_weight, int m,
                                 int k, int n);
 int hmx_mat_mul_permuted_qk_0_d16a32(float *restrict dst, const float *activation, const uint8_t *permuted_weight,
