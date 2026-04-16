@@ -369,6 +369,42 @@ static void silu_f32_ref(float *dst, const float *src, int ne0, int ne1) {
   }
 }
 
+static void softmax_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+
+    float row_max = x[0];
+    for (int i = 1; i < ne0; ++i) {
+      if (x[i] > row_max) {
+        row_max = x[i];
+      }
+    }
+
+    float sum = 0.0f;
+    for (int i = 0; i < ne0; ++i) {
+      y[i] = expf(x[i] - row_max);
+      sum += y[i];
+    }
+
+    float inv_sum = (sum > 0.0f && isfinite(sum)) ? (1.0f / sum) : 0.0f;
+    for (int i = 0; i < ne0; ++i) {
+      y[i] *= inv_sum;
+    }
+  }
+}
+
+static void gelu_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+    for (int i = 0; i < ne0; ++i) {
+      float v = x[i];
+      y[i]    = 0.5f * v * (1.0f + tanhf(0.7978845608f * (v + 0.044715f * v * v * v)));
+    }
+  }
+}
+
 static const char *binary_op_name(uint32_t op) {
   switch (op) {
     case HTP_OPS_ADD_F32:
@@ -520,6 +556,10 @@ static const char *unary_op_name(uint32_t op) {
       return "sigmoid_f32";
     case HTP_OPS_SILU_F32:
       return "silu_f32";
+    case HTP_OPS_SOFTMAX_F32:
+      return "softmax_f32";
+    case HTP_OPS_GELU_F32:
+      return "gelu_f32";
     default:
       return "unknown";
   }
@@ -607,6 +647,12 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
     case HTP_OPS_SILU_F32:
       silu_f32_ref(ref_dst, src, ne0, ne1);
       break;
+    case HTP_OPS_SOFTMAX_F32:
+      softmax_f32_ref(ref_dst, src, ne0, ne1);
+      break;
+    case HTP_OPS_GELU_F32:
+      gelu_f32_ref(ref_dst, src, ne0, ne1);
+      break;
     default:
       fprintf(stderr, "Unsupported unary op: %u\n", op);
       goto end;
@@ -618,6 +664,12 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
   float tol = 1e-6f;
   if (op == HTP_OPS_SIGMOID_F32 || op == HTP_OPS_SILU_F32) {
     tol = 3e-5f;
+  }
+  if (op == HTP_OPS_SOFTMAX_F32) {
+    tol = 6e-5f;
+  }
+  if (op == HTP_OPS_GELU_F32) {
+    tol = 2e-4f;
   }
 
   int n_failed = 0;
@@ -750,6 +802,8 @@ int main(int argc, char **argv) {
   test_unary_elemwise_f32_chan(chan, HTP_OPS_LEAKY_RELU_F32, 4096, 2);
   test_unary_elemwise_f32_chan(chan, HTP_OPS_SIGMOID_F32, 4096, 2);
   test_unary_elemwise_f32_chan(chan, HTP_OPS_SILU_F32, 4096, 2);
+  test_unary_elemwise_f32_chan(chan, HTP_OPS_SOFTMAX_F32, 4096, 2);
+  test_unary_elemwise_f32_chan(chan, HTP_OPS_GELU_F32, 4096, 2);
 
   htp_ops_destroy_channel(get_global_handle());
 
