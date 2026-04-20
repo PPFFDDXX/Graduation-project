@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -405,6 +406,90 @@ static void gelu_f32_ref(float *dst, const float *src, int ne0, int ne1) {
   }
 }
 
+static void layer_norm_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  const float eps = 1e-5f;
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+
+    float sum = 0.0f;
+    float sumsq = 0.0f;
+    for (int i = 0; i < ne0; ++i) {
+      sum += x[i];
+      sumsq += x[i] * x[i];
+    }
+    float mean = sum / ne0;
+    float var  = sumsq / ne0 - mean * mean;
+    float inv_std = 1.0f / sqrtf(var > 0.0f ? (var + eps) : eps);
+    for (int i = 0; i < ne0; ++i) {
+      y[i] = (x[i] - mean) * inv_std;
+    }
+  }
+}
+
+static void rope_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  const double theta_base = 10000.0;
+  const int   half       = ne0 / 2;
+  const size_t table_elems = (size_t) half * (size_t) ne1;
+
+  if (half <= 0) {
+    memcpy(dst, src, (size_t) ne0 * ne1 * sizeof(float));
+    return;
+  }
+
+  double *inv_freq = (double *) malloc((size_t) half * sizeof(double));
+  double *cos_table = (double *) malloc(table_elems * sizeof(double));
+  double *sin_table = (double *) malloc(table_elems * sizeof(double));
+  if (!inv_freq || !cos_table || !sin_table) {
+    free(inv_freq);
+    free(cos_table);
+    free(sin_table);
+    for (int i = 0; i < ne0 * ne1; ++i) {
+      dst[i] = src[i];
+    }
+    return;
+  }
+
+  for (int pair_idx = 0; pair_idx < half; ++pair_idx) {
+    inv_freq[pair_idx] = pow(theta_base, -((double) pair_idx / (double) half));
+  }
+  for (int j = 0; j < ne1; ++j) {
+    double *row_cos = cos_table + (size_t) j * half;
+    double *row_sin = sin_table + (size_t) j * half;
+    for (int pair_idx = 0; pair_idx < half; ++pair_idx) {
+      const double theta = (double) j * inv_freq[pair_idx];
+      row_cos[pair_idx] = cos(theta);
+      row_sin[pair_idx] = sin(theta);
+    }
+  }
+
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+    const double *row_cos = cos_table + (size_t) j * half;
+    const double *row_sin = sin_table + (size_t) j * half;
+
+    for (int i = 0; i + 1 < ne0; i += 2) {
+      const int   pair_idx = i / 2;
+      const double c        = row_cos[pair_idx];
+      const double s        = row_sin[pair_idx];
+
+      const double x0 = (double) x[i + 0];
+      const double x1 = (double) x[i + 1];
+      y[i + 0]        = (float) (x0 * c - x1 * s);
+      y[i + 1]        = (float) (x0 * s + x1 * c);
+    }
+
+    if (ne0 & 1) {
+      y[ne0 - 1] = x[ne0 - 1];
+    }
+  }
+
+  free(inv_freq);
+  free(cos_table);
+  free(sin_table);
+}
+
 static const char *binary_op_name(uint32_t op) {
   switch (op) {
     case HTP_OPS_ADD_F32:
@@ -560,6 +645,10 @@ static const char *unary_op_name(uint32_t op) {
       return "softmax_f32";
     case HTP_OPS_GELU_F32:
       return "gelu_f32";
+    case HTP_OPS_LAYER_NORM_F32:
+      return "layer_norm_f32";
+    case HTP_OPS_ROPE_F32:
+      return "rope_f32";
     default:
       return "unknown";
   }
@@ -653,6 +742,12 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
     case HTP_OPS_GELU_F32:
       gelu_f32_ref(ref_dst, src, ne0, ne1);
       break;
+    case HTP_OPS_LAYER_NORM_F32:
+      layer_norm_f32_ref(ref_dst, src, ne0, ne1);
+      break;
+    case HTP_OPS_ROPE_F32:
+      rope_f32_ref(ref_dst, src, ne0, ne1);
+      break;
     default:
       fprintf(stderr, "Unsupported unary op: %u\n", op);
       goto end;
@@ -670,6 +765,12 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
   }
   if (op == HTP_OPS_GELU_F32) {
     tol = 2e-4f;
+  }
+  if (op == HTP_OPS_LAYER_NORM_F32) {
+    tol = 2e-4f;
+  }
+  if (op == HTP_OPS_ROPE_F32) {
+    tol = 1e-5f;
   }
 
   int n_failed = 0;
@@ -804,6 +905,8 @@ int main(int argc, char **argv) {
   test_unary_elemwise_f32_chan(chan, HTP_OPS_SILU_F32, 4096, 2);
   test_unary_elemwise_f32_chan(chan, HTP_OPS_SOFTMAX_F32, 4096, 2);
   test_unary_elemwise_f32_chan(chan, HTP_OPS_GELU_F32, 4096, 2);
+  test_unary_elemwise_f32_chan(chan, HTP_OPS_LAYER_NORM_F32, 4096, 2);
+  test_unary_elemwise_f32_chan(chan, HTP_OPS_ROPE_F32, 4096, 2);
 
   htp_ops_destroy_channel(get_global_handle());
 

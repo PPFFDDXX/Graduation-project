@@ -13,6 +13,7 @@ extern "C" {
 #endif
 
 int hvx_rms_norm_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
+int hvx_layer_norm_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
 
 int hvx_add_f32(float *restrict dst, const float *restrict src0, const float *restrict src1, int ne0, int ne1);
 
@@ -33,6 +34,7 @@ int hvx_silu_f32(float *restrict dst, const float *restrict src, int ne0, int ne
 int hvx_softmax_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
 
 int hvx_gelu_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
+int hvx_rope_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
 
 int hmx_mat_mul_permuted_w16a32(float *restrict dst, const float *activation, const __fp16 *permuted_weight, int m,
                                 int k, int n);

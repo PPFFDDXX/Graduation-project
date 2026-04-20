@@ -92,6 +92,20 @@ int execute_op_simple(struct OpComputeRequest *req) {
       }
       break;
 
+    case HTP_OPS_LAYER_NORM_F32:
+      {
+        auto   params = reinterpret_cast<RmsNormF32Params *>(req->payload);
+        size_t size   = params->ne0 * params->ne1 * sizeof(float);
+
+        add_buffer(out_bufs, params->dst, size);
+        add_buffer(in_bufs, params->src, size);
+
+        validate_in_bufs();
+        ret = hvx_layer_norm_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), params->ne0, params->ne1);
+        validate_out_bufs();
+      }
+      break;
+
     case HTP_OPS_ADD_F32:
       {
         auto   params = reinterpret_cast<BinaryElemwiseF32Params *>(req->payload);
@@ -236,6 +250,20 @@ int execute_op_simple(struct OpComputeRequest *req) {
 
         validate_in_bufs();
         ret = hvx_gelu_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), params->ne0, params->ne1);
+        validate_out_bufs();
+      }
+      break;
+
+    case HTP_OPS_ROPE_F32:
+      {
+        auto   params = reinterpret_cast<UnaryElemwiseF32Params *>(req->payload);
+        size_t size   = params->ne0 * params->ne1 * sizeof(float);
+
+        add_buffer(out_bufs, params->dst, size);
+        add_buffer(in_bufs, params->src, size);
+
+        validate_in_bufs();
+        ret = hvx_rope_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), params->ne0, params->ne1);
         validate_out_bufs();
       }
       break;
