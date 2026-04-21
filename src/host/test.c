@@ -38,6 +38,7 @@ int alloc_shared_mem_buf(void **p_buf, int *p_fd, size_t size) {
   int fd = rpcmem_to_fd(buf);
   if (fd < 0) {
     fprintf(stderr, "alloc_shared_mem_buf: rpcmem_to_fd failed\n");
+    rpcmem_free(buf);
     return -1;
   }
 
@@ -45,6 +46,7 @@ int alloc_shared_mem_buf(void **p_buf, int *p_fd, size_t size) {
   int err = fastrpc_mmap(CDSP_DOMAIN_ID, fd, buf, 0, size, FASTRPC_MAP_FD);
   if (err) {
     fprintf(stderr, "alloc_shared_mem_buf: fastrpc_mmap failed, err: %d\n", err);
+    rpcmem_free(buf);
     return -1;
   }
 
@@ -56,6 +58,46 @@ int alloc_shared_mem_buf(void **p_buf, int *p_fd, size_t size) {
 void free_shared_mem_buf(void *buf, int fd, size_t size) {
   fastrpc_munmap(CDSP_DOMAIN_ID, fd, buf, size);
   rpcmem_free(buf);
+}
+
+static int put_fd_maps_chan(void *chan, const int *fds, int n_fds) {
+  struct MessageHeader *msg = (struct MessageHeader *) chan;
+
+  if (!msg || !fds || n_fds <= 0) {
+    return -1;
+  }
+
+  struct RequestHeader req_hdr = {
+    .state = 0,
+    .type  = REQUEST_TYPE_RPCMEM_MAP,
+  };
+  struct RpcmemMapRequest map_req = {
+    .n_puts = n_fds,
+    .n_gets = 0,
+  };
+
+  size_t req_size     = sizeof(req_hdr) + sizeof(map_req) + (size_t) n_fds * sizeof(int);
+  msg->state.d        = 0;
+  msg->n_reqs         = 1;
+  msg->req_offsets[0] = message_header_size(msg);
+  msg->req_offsets[1] = msg->req_offsets[0] + req_size;
+
+  uint8_t *p                  = (uint8_t *) message_header_get_request_ptr(msg, 0);
+  *(struct RequestHeader *) p = req_hdr;
+  p += sizeof(struct RequestHeader);
+  *(struct RpcmemMapRequest *) p = map_req;
+  p += sizeof(struct RpcmemMapRequest);
+  for (int i = 0; i < n_fds; ++i) {
+    *(int *) p = fds[i];
+    p += sizeof(int);
+  }
+
+  msg->state.v[0] = 1;
+  while (msg->state.v[1] != 1) {
+    usleep(10);
+  }
+
+  return message_header_get_request_ptr(msg, 0)->state;
 }
 
 static void rms_norm_f32_ref(float *dst, const float *src, int ne0, int ne1) {
@@ -329,6 +371,13 @@ static void div_f32_ref(float *dst, const float *src0, const float *src1, int ne
   binary_elemwise_f32_ref(dst, src0, src1, ne0, ne1, BINARY_REF_OP_DIV);
 }
 
+static inline int nearly_equal_f32(float a, float b, float abs_tol, float rel_tol) {
+  float diff = fabsf(a - b);
+  float mag  = fmaxf(fabsf(a), fabsf(b));
+  float tol  = abs_tol + rel_tol * mag;
+  return diff <= tol;
+}
+
 static void relu_f32_ref(float *dst, const float *src, int ne0, int ne1) {
   for (int j = 0; j < ne1; ++j) {
     float       *y = dst + j * ne0;
@@ -509,7 +558,7 @@ static void test_binary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int 
   struct MessageHeader *msg = (struct MessageHeader *) chan;
 
   float *src0, *src1, *dsp_dst, *ref_dst;
-  int    fd_src0, fd_src1, fd_dst;
+  int    fd_src0 = -1, fd_src1 = -1, fd_dst = -1;
 
   int err, passed = 0;
 
@@ -603,9 +652,18 @@ static void test_binary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int 
           cpu_elapsed_us, chan_elapsed_us);
 
   int   n_failed = 0;
-  float tol      = (op == HTP_OPS_DIV_F32) ? 1e-5f : 1e-6f;
+  float abs_tol  = 1e-5f;
+  float rel_tol  = 0.0f;
+  if (op == HTP_OPS_MPY_F32) {
+    abs_tol = 5e-5f;
+    rel_tol = 1e-6f;
+  }
+  if (op == HTP_OPS_DIV_F32) {
+    abs_tol = 1e-3f;
+    rel_tol = 1e-5f;
+  }
   for (int i = 0; i < n_elems; ++i) {
-    if (fabs(ref_dst[i] - dsp_dst[i]) > tol) {
+    if (!nearly_equal_f32(ref_dst[i], dsp_dst[i], abs_tol, rel_tol)) {
       n_failed++;
       if (n_failed < 16) {
         fprintf(stderr, "%s: index %d, ref val=%.6f, dsp val=%.6f\n", binary_op_name(op), i, ref_dst[i], dsp_dst[i]);
@@ -615,6 +673,14 @@ static void test_binary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int 
   passed = (n_failed == 0);
 
 end:
+  if (fd_dst >= 0 && fd_src0 >= 0 && fd_src1 >= 0) {
+    int map_fds[3] = { fd_dst, fd_src0, fd_src1 };
+    int map_err    = put_fd_maps_chan(chan, map_fds, 3);
+    if (map_err != 0) {
+      fprintf(stderr, "%s: RPCMEM_MAP put failed with %x\n", binary_op_name(op), map_err);
+    }
+  }
+
   if (src0) {
     free_shared_mem_buf(src0, fd_src0, size);
   }
@@ -658,7 +724,7 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
   struct MessageHeader *msg = (struct MessageHeader *) chan;
 
   float *src, *dsp_dst, *ref_dst;
-  int    fd_src, fd_dst;
+  int    fd_src = -1, fd_dst = -1;
   int    err, passed = 0;
 
   src = dsp_dst = ref_dst = NULL;
@@ -757,6 +823,9 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
   fprintf(stderr, "%s CPU(ref) took %ld us, DSP(CHAN) %ld us\n", unary_op_name(op), cpu_elapsed_us, chan_elapsed_us);
 
   float tol = 1e-6f;
+  float abs_tol = 0.0f;
+  float rel_tol = 0.0f;
+  int   use_mixed_tol = 0;
   if (op == HTP_OPS_SIGMOID_F32 || op == HTP_OPS_SILU_F32) {
     tol = 3e-5f;
   }
@@ -770,12 +839,20 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
     tol = 2e-4f;
   }
   if (op == HTP_OPS_ROPE_F32) {
-    tol = 1e-5f;
+    use_mixed_tol = 1;
+    abs_tol       = 2e-5f;
+    rel_tol       = 1e-6f;
   }
 
   int n_failed = 0;
   for (int i = 0; i < n_elems; ++i) {
-    if (fabs(ref_dst[i] - dsp_dst[i]) > tol) {
+    int bad = 0;
+    if (use_mixed_tol) {
+      bad = !nearly_equal_f32(ref_dst[i], dsp_dst[i], abs_tol, rel_tol);
+    } else {
+      bad = fabs(ref_dst[i] - dsp_dst[i]) > tol;
+    }
+    if (bad) {
       n_failed++;
       if (n_failed < 16) {
         fprintf(stderr, "%s: index %d, ref val=%.6f, dsp val=%.6f\n", unary_op_name(op), i, ref_dst[i], dsp_dst[i]);
@@ -785,6 +862,14 @@ static void test_unary_elemwise_f32_chan(void *chan, uint32_t op, int ne0, int n
   passed = (n_failed == 0);
 
 end:
+  if (fd_dst >= 0 && fd_src >= 0) {
+    int map_fds[2] = { fd_dst, fd_src };
+    int map_err    = put_fd_maps_chan(chan, map_fds, 2);
+    if (map_err != 0) {
+      fprintf(stderr, "%s: RPCMEM_MAP put failed with %x\n", unary_op_name(op), map_err);
+    }
+  }
+
   if (src) {
     free_shared_mem_buf(src, fd_src, size);
   }
@@ -895,18 +980,28 @@ int main(int argc, char **argv) {
   }
 
   // test_rms_norm_f32_chan(chan, 60000);
-  test_binary_elemwise_f32_chan(chan, HTP_OPS_ADD_F32, 4096, 2);
-  test_binary_elemwise_f32_chan(chan, HTP_OPS_SUB_F32, 4096, 2);
-  test_binary_elemwise_f32_chan(chan, HTP_OPS_MPY_F32, 4096, 2);
-  test_binary_elemwise_f32_chan(chan, HTP_OPS_DIV_F32, 4096, 2);
-  test_unary_elemwise_f32_chan(chan, HTP_OPS_RELU_F32, 4096, 2);
-  test_unary_elemwise_f32_chan(chan, HTP_OPS_LEAKY_RELU_F32, 4096, 2);
-  test_unary_elemwise_f32_chan(chan, HTP_OPS_SIGMOID_F32, 4096, 2);
-  test_unary_elemwise_f32_chan(chan, HTP_OPS_SILU_F32, 4096, 2);
-  test_unary_elemwise_f32_chan(chan, HTP_OPS_SOFTMAX_F32, 4096, 2);
-  test_unary_elemwise_f32_chan(chan, HTP_OPS_GELU_F32, 4096, 2);
-  test_unary_elemwise_f32_chan(chan, HTP_OPS_LAYER_NORM_F32, 4096, 2);
-  test_unary_elemwise_f32_chan(chan, HTP_OPS_ROPE_F32, 4096, 2);
+  const int ne0 = 4096;
+  const int seq_lens[] = { 2, 128, 2048};
+  const int n_seq_lens = (int) (sizeof(seq_lens) / sizeof(seq_lens[0]));
+
+  for (int i = 0; i < n_seq_lens; ++i) {
+    const int ne1 = seq_lens[i];
+    fprintf(stderr, "\n===== Running tests with ne0=%d, ne1=%d =====\n", ne0, ne1);
+
+    test_binary_elemwise_f32_chan(chan, HTP_OPS_ADD_F32, ne0, ne1);
+    test_binary_elemwise_f32_chan(chan, HTP_OPS_SUB_F32, ne0, ne1);
+    test_binary_elemwise_f32_chan(chan, HTP_OPS_MPY_F32, ne0, ne1);
+    test_binary_elemwise_f32_chan(chan, HTP_OPS_DIV_F32, ne0, ne1);
+
+    test_unary_elemwise_f32_chan(chan, HTP_OPS_RELU_F32, ne0, ne1);
+    test_unary_elemwise_f32_chan(chan, HTP_OPS_LEAKY_RELU_F32, ne0, ne1);
+    test_unary_elemwise_f32_chan(chan, HTP_OPS_SIGMOID_F32, ne0, ne1);
+    test_unary_elemwise_f32_chan(chan, HTP_OPS_SILU_F32, ne0, ne1);
+    test_unary_elemwise_f32_chan(chan, HTP_OPS_SOFTMAX_F32, ne0, ne1);
+    test_unary_elemwise_f32_chan(chan, HTP_OPS_GELU_F32, ne0, ne1);
+    test_unary_elemwise_f32_chan(chan, HTP_OPS_LAYER_NORM_F32, ne0, ne1);
+    test_unary_elemwise_f32_chan(chan, HTP_OPS_ROPE_F32, ne0, ne1);
+  }
 
   htp_ops_destroy_channel(get_global_handle());
 

@@ -4,5 +4,4 @@ hexagon*
 .vscode/
 htp_ref/
 build/
-src/dsp/sim_tests_main.c
 run.sh
