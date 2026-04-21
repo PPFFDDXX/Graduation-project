@@ -95,6 +95,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/vtcm_mgr.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn_sp_hdim.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn_hvx.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/add.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/div.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/sub.c
@@ -128,6 +129,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/softmax.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/gelu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/rope.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn_hvx.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/layer_norm.c
     )
 

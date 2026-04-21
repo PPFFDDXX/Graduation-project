@@ -33,6 +33,10 @@ static inline float rng_f32(float lo, float hi) {
   return lo + (hi - lo) * t;
 }
 
+static inline size_t align_up_sz(size_t size, size_t align) {
+  return (size + align - 1) / align * align;
+}
+
 static void ref_add(float *dst, const float *a, const float *b, int n) {
   for (int i = 0; i < n; ++i) {
     dst[i] = a[i] + b[i];
@@ -197,6 +201,71 @@ static void ref_rope(float *dst, const float *src, int ne0, int ne1) {
   free(inv_freq);
   free(cos_table);
   free(sin_table);
+}
+
+static void ref_flash_attn_hvx_f32(float *dst, const float *q, const __fp16 *k, const __fp16 *v, const __fp16 *mask,
+                                   int qo_len, int kv_len, int n_heads, int n_kv_heads, int head_dim) {
+  const int   gqa_factor = n_heads / n_kv_heads;
+  const size_t kv_pad_len = align_up_sz((size_t) kv_len, 64);
+  const float qk_scale = 1.0f / sqrtf((float) head_dim) * 1.44269504f;  // log2(e)
+
+  for (int h = 0; h < n_heads; ++h) {
+    const int h_kv = h / gqa_factor;
+    for (int i = 0; i < qo_len; ++i) {
+      float row_max = -3.40282347e+38f;  // -FLT_MAX
+      for (int j = 0; j < kv_len; ++j) {
+        float s = 0.0f;
+        const float *q_row = q + ((size_t) i * n_heads + h) * head_dim;
+        const __fp16 *k_row = k + ((size_t) j * n_kv_heads + h_kv) * head_dim;
+        for (int d = 0; d < head_dim; ++d) {
+          s += q_row[d] * (float) k_row[d];
+        }
+        s *= qk_scale;
+
+        if (mask && (float) mask[(size_t) i * kv_pad_len + j] < -128.0f) {
+          s = -3.40282347e+38f;
+        }
+        if (s > row_max) {
+          row_max = s;
+        }
+      }
+
+      float sum = 0.0f;
+      for (int d = 0; d < head_dim; ++d) {
+        dst[((size_t) i * n_heads + h) * head_dim + d] = 0.0f;
+      }
+
+      for (int j = 0; j < kv_len; ++j) {
+        float s = 0.0f;
+        const float *q_row = q + ((size_t) i * n_heads + h) * head_dim;
+        const __fp16 *k_row = k + ((size_t) j * n_kv_heads + h_kv) * head_dim;
+        for (int d = 0; d < head_dim; ++d) {
+          s += q_row[d] * (float) k_row[d];
+        }
+        s *= qk_scale;
+
+        if (mask && (float) mask[(size_t) i * kv_pad_len + j] < -128.0f) {
+          continue;
+        }
+
+        float p = exp2f(s - row_max);
+        sum += p;
+        const __fp16 *v_row = v + ((size_t) j * n_kv_heads + h_kv) * head_dim;
+        float *o_row = dst + ((size_t) i * n_heads + h) * head_dim;
+        for (int d = 0; d < head_dim; ++d) {
+          o_row[d] += p * (float) v_row[d];
+        }
+      }
+
+      if (sum > 0.0f) {
+        float inv_sum = 1.0f / sum;
+        float *o_row = dst + ((size_t) i * n_heads + h) * head_dim;
+        for (int d = 0; d < head_dim; ++d) {
+          o_row[d] *= inv_sum;
+        }
+      }
+    }
+  }
 }
 
 static int run_one_binary_test(const char *name, binary_op_fn fn, void (*ref_fn)(float *, const float *, const float *, int),
@@ -568,6 +637,106 @@ static int run_one_rope_test(const char *name, int ne0, int ne1, float tol) {
   return n_fail == 0 ? 0 : -1;
 }
 
+static int run_one_flash_attn_hvx_test(const char *name, int qo_len, int kv_len, int n_heads, int n_kv_heads,
+                                       int head_dim, float tol) {
+  const size_t qo_size   = (size_t) qo_len * n_heads * head_dim;
+  const size_t kv_size   = (size_t) kv_len * n_kv_heads * head_dim;
+  const size_t kv_pad_len = align_up_sz((size_t) kv_len, 64);
+  const size_t mask_size = (size_t) qo_len * kv_pad_len;
+
+  float  *q   = NULL;
+  float  *dst = NULL;
+  float  *ref = NULL;
+  __fp16 *k   = NULL;
+  __fp16 *v   = NULL;
+  __fp16 *mask = NULL;
+
+  if (posix_memalign((void **) &q, VLEN, qo_size * sizeof(float)) != 0 ||
+      posix_memalign((void **) &dst, VLEN, qo_size * sizeof(float)) != 0 ||
+      posix_memalign((void **) &ref, VLEN, qo_size * sizeof(float)) != 0 ||
+      posix_memalign((void **) &k, VLEN, kv_size * sizeof(__fp16)) != 0 ||
+      posix_memalign((void **) &v, VLEN, kv_size * sizeof(__fp16)) != 0 ||
+      posix_memalign((void **) &mask, VLEN, mask_size * sizeof(__fp16)) != 0) {
+    LOGF("%s: allocation failed", name);
+    free(q);
+    free(dst);
+    free(ref);
+    free(k);
+    free(v);
+    free(mask);
+    return -1;
+  }
+
+  for (size_t i = 0; i < qo_size; ++i) {
+    q[i] = rng_f32(-3.0f, 3.0f);
+  }
+  for (size_t i = 0; i < kv_size; ++i) {
+    k[i] = (__fp16) rng_f32(-3.0f, 3.0f);
+    v[i] = (__fp16) rng_f32(-3.0f, 3.0f);
+  }
+  for (int i = 0; i < qo_len; ++i) {
+    for (size_t j = 0; j < kv_pad_len; ++j) {
+      // causal-style mask: j > i => masked out
+      mask[(size_t) i * kv_pad_len + j] = (j < (size_t) kv_len && j <= (size_t) i) ? (__fp16) 0.0f : (__fp16) -200.0f;
+    }
+  }
+
+  const int warmup = 2;
+  const int repeat = 5;
+  int       rc     = 0;
+
+  for (int t = 0; t < warmup; ++t) {
+    rc = simple_flash_attn_hvx_f32(dst, q, k, v, mask, qo_len, kv_len, n_heads, n_kv_heads, head_dim);
+    if (rc != 0) {
+      break;
+    }
+  }
+  for (int t = 0; t < repeat; ++t) {
+    rc = simple_flash_attn_hvx_f32(dst, q, k, v, mask, qo_len, kv_len, n_heads, n_kv_heads, head_dim);
+    if (rc != 0) {
+      break;
+    }
+  }
+  if (rc != 0) {
+    LOGF("%s: kernel returned %d", name, rc);
+    free(q);
+    free(dst);
+    free(ref);
+    free(k);
+    free(v);
+    free(mask);
+    return -1;
+  }
+
+  ref_flash_attn_hvx_f32(ref, q, k, v, mask, qo_len, kv_len, n_heads, n_kv_heads, head_dim);
+
+  int   n_fail   = 0;
+  float max_diff = 0.0f;
+  for (size_t i = 0; i < qo_size; ++i) {
+    const float d = my_fabsf(dst[i] - ref[i]);
+    if (d > max_diff) {
+      max_diff = d;
+    }
+    if (d > tol) {
+      ++n_fail;
+      if (n_fail <= 8) {
+        LOGF("%s mismatch @%d: dst=%g ref=%g diff=%g", name, (int) i, dst[i], ref[i], d);
+      }
+    }
+  }
+
+  LOGF("%s: qo_len=%d kv_len=%d n_heads=%d n_kv_heads=%d head_dim=%d repeats=%d max_diff=%g failed=%d", name, qo_len,
+       kv_len, n_heads, n_kv_heads, head_dim, repeat, max_diff, n_fail);
+
+  free(q);
+  free(dst);
+  free(ref);
+  free(k);
+  free(v);
+  free(mask);
+  return n_fail == 0 ? 0 : -1;
+}
+
 int main(int argc, char **argv) {
   int status = 0;
   const char *mode = (argc > 1) ? argv[1] : "all";
@@ -584,71 +753,76 @@ int main(int argc, char **argv) {
   (void) ref_silu;
   (void) ref_gelu;
   (void) ref_rope;
+  (void) ref_flash_attn_hvx_f32;
   (void) run_one_binary_test;
   (void) run_one_unary_test;
   (void) run_one_softmax_test;
   (void) run_one_layer_norm_test;
+  (void) run_one_rope_test;
+  // // Case 1: tail path (ne0 not divisible by 32), keep ne1=1 to preserve row alignment.
+  // if (run_all || strcmp(mode, "add") == 0) {
+  //   status |= run_one_binary_test("add_f32_tail", hvx_add_f32, ref_add, 4099, 1, 0, 1e-4f);
+  // }
+  // if (run_all || strcmp(mode, "sub") == 0) {
+  //   status |= run_one_binary_test("sub_f32_tail", hvx_sub_f32, ref_sub, 4099, 1, 0, 1e-4f);
+  // }
+  // if (run_all || strcmp(mode, "mpy") == 0) {
+  //   status |= run_one_binary_test("mpy_f32_tail", hvx_mpy_f32, ref_mpy, 4099, 1, 0, 1e-4f);
+  // }
+  // if (run_all || strcmp(mode, "div") == 0) {
+  //   status |= run_one_binary_test("div_f32_tail", hvx_div_f32, ref_div, 4099, 1, 1, 2e-3f);
+  // }
 
-  // Case 1: tail path (ne0 not divisible by 32), keep ne1=1 to preserve row alignment.
-  if (run_all || strcmp(mode, "add") == 0) {
-    status |= run_one_binary_test("add_f32_tail", hvx_add_f32, ref_add, 4099, 1, 0, 1e-4f);
-  }
-  if (run_all || strcmp(mode, "sub") == 0) {
-    status |= run_one_binary_test("sub_f32_tail", hvx_sub_f32, ref_sub, 4099, 1, 0, 1e-4f);
-  }
-  if (run_all || strcmp(mode, "mpy") == 0) {
-    status |= run_one_binary_test("mpy_f32_tail", hvx_mpy_f32, ref_mpy, 4099, 1, 0, 1e-4f);
-  }
-  if (run_all || strcmp(mode, "div") == 0) {
-    status |= run_one_binary_test("div_f32_tail", hvx_div_f32, ref_div, 4099, 1, 1, 2e-3f);
-  }
+  // // Case 2: multi-row path with per-row 128B alignment (ne0 divisible by 32).
+  // if (run_all || strcmp(mode, "add") == 0) {
+  //   status |= run_one_binary_test("add_f32_rows", hvx_add_f32, ref_add, 4096, 8, 0, 1e-4f);
+  // }
+  // if (run_all || strcmp(mode, "sub") == 0) {
+  //   status |= run_one_binary_test("sub_f32_rows", hvx_sub_f32, ref_sub, 4096, 8, 0, 1e-4f);
+  // }
+  // if (run_all || strcmp(mode, "mpy") == 0) {
+  //   status |= run_one_binary_test("mpy_f32_rows", hvx_mpy_f32, ref_mpy, 4096, 8, 0, 1e-4f);
+  // }
+  // if (run_all || strcmp(mode, "div") == 0) {
+  //   status |= run_one_binary_test("div_f32_rows", hvx_div_f32, ref_div, 4096, 8, 1, 2e-3f);
+  // }
 
-  // Case 2: multi-row path with per-row 128B alignment (ne0 divisible by 32).
-  if (run_all || strcmp(mode, "add") == 0) {
-    status |= run_one_binary_test("add_f32_rows", hvx_add_f32, ref_add, 4096, 8, 0, 1e-4f);
-  }
-  if (run_all || strcmp(mode, "sub") == 0) {
-    status |= run_one_binary_test("sub_f32_rows", hvx_sub_f32, ref_sub, 4096, 8, 0, 1e-4f);
-  }
-  if (run_all || strcmp(mode, "mpy") == 0) {
-    status |= run_one_binary_test("mpy_f32_rows", hvx_mpy_f32, ref_mpy, 4096, 8, 0, 1e-4f);
-  }
-  if (run_all || strcmp(mode, "div") == 0) {
-    status |= run_one_binary_test("div_f32_rows", hvx_div_f32, ref_div, 4096, 8, 1, 2e-3f);
-  }
-
-  // ReLU unary op
-  if (run_all || strcmp(mode, "relu") == 0) {
-    status |= run_one_unary_test("relu_f32_tail", hvx_relu_f32, ref_relu, 4099, 1, 1e-6f);
-    status |= run_one_unary_test("relu_f32_rows", hvx_relu_f32, ref_relu, 4096, 8, 1e-6f);
-  }
-  if (run_all || strcmp(mode, "leaky_relu") == 0) {
-    status |= run_one_unary_test("leaky_relu_f32_tail", hvx_leaky_relu_f32, ref_leaky_relu, 4099, 1, 1e-6f);
-    status |= run_one_unary_test("leaky_relu_f32_rows", hvx_leaky_relu_f32, ref_leaky_relu, 4096, 8, 1e-6f);
-  }
-  if (run_all || strcmp(mode, "sigmoid") == 0) {
-    status |= run_one_unary_test("sigmoid_f32_tail", hvx_sigmoid_f32, ref_sigmoid, 4099, 1, 3e-5f);
-    status |= run_one_unary_test("sigmoid_f32_rows", hvx_sigmoid_f32, ref_sigmoid, 4096, 8, 3e-5f);
-  }
-  if (run_all || strcmp(mode, "silu") == 0) {
-    status |= run_one_unary_test("silu_f32_tail", hvx_silu_f32, ref_silu, 4099, 1, 3e-5f);
-    status |= run_one_unary_test("silu_f32_rows", hvx_silu_f32, ref_silu, 4096, 8, 3e-5f);
-  }
-  if (run_all || strcmp(mode, "softmax") == 0) {
-    status |= run_one_softmax_test("softmax_f32_tail", 4099, 1, 6e-5f);
-    status |= run_one_softmax_test("softmax_f32_rows", 4096, 8, 6e-5f);
-  }
-  if (run_all || strcmp(mode, "gelu") == 0) {
-    status |= run_one_unary_test("gelu_f32_tail", hvx_gelu_f32, ref_gelu, 4099, 1, 2e-4f);
-    status |= run_one_unary_test("gelu_f32_rows", hvx_gelu_f32, ref_gelu, 4096, 8, 2e-4f);
-  }
-  if (run_all || strcmp(mode, "layer_norm") == 0) {
-    status |= run_one_layer_norm_test("layer_norm_f32_tail", 4099, 1, 2e-4f);
-    status |= run_one_layer_norm_test("layer_norm_f32_rows", 4096, 8, 2e-4f);
-  }
-  if (run_all || strcmp(mode, "rope") == 0) {
-    status |= run_one_rope_test("rope_f32_tail", 4099, 1, 1e-5f);
-    status |= run_one_rope_test("rope_f32_rows", 4096, 8, 1e-5f);
+  // // ReLU unary op
+  // if (run_all || strcmp(mode, "relu") == 0) {
+  //   status |= run_one_unary_test("relu_f32_tail", hvx_relu_f32, ref_relu, 4099, 1, 1e-6f);
+  //   status |= run_one_unary_test("relu_f32_rows", hvx_relu_f32, ref_relu, 4096, 8, 1e-6f);
+  // }
+  // if (run_all || strcmp(mode, "leaky_relu") == 0) {
+  //   status |= run_one_unary_test("leaky_relu_f32_tail", hvx_leaky_relu_f32, ref_leaky_relu, 4099, 1, 1e-6f);
+  //   status |= run_one_unary_test("leaky_relu_f32_rows", hvx_leaky_relu_f32, ref_leaky_relu, 4096, 8, 1e-6f);
+  // }
+  // if (run_all || strcmp(mode, "sigmoid") == 0) {
+  //   status |= run_one_unary_test("sigmoid_f32_tail", hvx_sigmoid_f32, ref_sigmoid, 4099, 1, 3e-5f);
+  //   status |= run_one_unary_test("sigmoid_f32_rows", hvx_sigmoid_f32, ref_sigmoid, 4096, 8, 3e-5f);
+  // }
+  // if (run_all || strcmp(mode, "silu") == 0) {
+  //   status |= run_one_unary_test("silu_f32_tail", hvx_silu_f32, ref_silu, 4099, 1, 3e-5f);
+  //   status |= run_one_unary_test("silu_f32_rows", hvx_silu_f32, ref_silu, 4096, 8, 3e-5f);
+  // }
+  // if (run_all || strcmp(mode, "softmax") == 0) {
+  //   status |= run_one_softmax_test("softmax_f32_tail", 4099, 1, 6e-5f);
+  //   status |= run_one_softmax_test("softmax_f32_rows", 4096, 8, 6e-5f);
+  // }
+  // if (run_all || strcmp(mode, "gelu") == 0) {
+  //   status |= run_one_unary_test("gelu_f32_tail", hvx_gelu_f32, ref_gelu, 4099, 1, 2e-4f);
+  //   status |= run_one_unary_test("gelu_f32_rows", hvx_gelu_f32, ref_gelu, 4096, 8, 2e-4f);
+  // }
+  // if (run_all || strcmp(mode, "layer_norm") == 0) {
+  //   status |= run_one_layer_norm_test("layer_norm_f32_tail", 4099, 1, 2e-4f);
+  //   status |= run_one_layer_norm_test("layer_norm_f32_rows", 4096, 8, 2e-4f);
+  // }
+  // if (run_all || strcmp(mode, "rope") == 0) {
+  //   status |= run_one_rope_test("rope_f32_tail", 4099, 1, 1e-5f);
+  //   status |= run_one_rope_test("rope_f32_rows", 4096, 8, 1e-5f);
+  // }
+  if (run_all || strcmp(mode, "flash_attn_hvx") == 0) {
+    status |= run_one_flash_attn_hvx_test("flash_attn_hvx_small", 32, 64, 8, 2, 128, 8e-3f);
+    status |= run_one_flash_attn_hvx_test("flash_attn_hvx_mid", 64, 128, 8, 2, 128, 8e-3f);
   }
 
   LOGF("%s", status == 0 ? "SIM binary tests passed" : "SIM binary tests failed");

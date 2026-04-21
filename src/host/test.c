@@ -539,6 +539,216 @@ static void rope_f32_ref(float *dst, const float *src, int ne0, int ne1) {
   free(sin_table);
 }
 
+static void flash_attn_f32_ref(float *dst, const float *q, const __fp16 *k, const __fp16 *v, const __fp16 *mask,
+                               int qo_len, int kv_len, int n_heads, int n_kv_heads, int head_dim) {
+  const int   gqa_factor = n_heads / n_kv_heads;
+  const int   kv_pad_len = align_up((size_t) kv_len, 64);
+  const float qk_scale   = 1.0f / sqrtf((float) head_dim) * 1.44269504f;  // log2(e)
+
+  for (int h = 0; h < n_heads; ++h) {
+    const int h_kv = h / gqa_factor;
+    for (int i = 0; i < qo_len; ++i) {
+      float row_max = -3.40282347e+38f;  // -FLT_MAX
+      for (int j = 0; j < kv_len; ++j) {
+        float s = 0.0f;
+        const float *q_row   = q + ((size_t) i * n_heads + h) * head_dim;
+        const __fp16 *k_row  = k + ((size_t) j * n_kv_heads + h_kv) * head_dim;
+        for (int d = 0; d < head_dim; ++d) {
+          s += q_row[d] * (float) k_row[d];
+        }
+        s *= qk_scale;
+
+        if (mask && (float) mask[(size_t) i * kv_pad_len + j] < -128.0f) {
+          s = -3.40282347e+38f;
+        }
+        if (s > row_max) {
+          row_max = s;
+        }
+      }
+
+      float *o_row = dst + ((size_t) i * n_heads + h) * head_dim;
+      for (int d = 0; d < head_dim; ++d) {
+        o_row[d] = 0.0f;
+      }
+
+      float sum = 0.0f;
+      for (int j = 0; j < kv_len; ++j) {
+        float s = 0.0f;
+        const float *q_row  = q + ((size_t) i * n_heads + h) * head_dim;
+        const __fp16 *k_row = k + ((size_t) j * n_kv_heads + h_kv) * head_dim;
+        for (int d = 0; d < head_dim; ++d) {
+          s += q_row[d] * (float) k_row[d];
+        }
+        s *= qk_scale;
+
+        if (mask && (float) mask[(size_t) i * kv_pad_len + j] < -128.0f) {
+          continue;
+        }
+
+        float p = exp2f(s - row_max);
+        sum += p;
+
+        const __fp16 *v_row = v + ((size_t) j * n_kv_heads + h_kv) * head_dim;
+        for (int d = 0; d < head_dim; ++d) {
+          o_row[d] += p * (float) v_row[d];
+        }
+      }
+
+      if (sum > 0.0f) {
+        float inv_sum = 1.0f / sum;
+        for (int d = 0; d < head_dim; ++d) {
+          o_row[d] *= inv_sum;
+        }
+      }
+    }
+  }
+}
+
+static void test_flash_attn_f32_chan(void *chan, int qo_len, int kv_len, int n_heads, int n_kv_heads, int head_dim) {
+  struct MessageHeader *msg = (struct MessageHeader *) chan;
+
+  float  *q = NULL, *dsp_o = NULL, *ref_o = NULL;
+  __fp16 *k = NULL, *v = NULL, *mask = NULL;
+  int     fd_q = -1, fd_o = -1, fd_k = -1, fd_v = -1, fd_mask = -1;
+  int     err, passed = 0;
+
+  const int    kv_pad_len = align_up((size_t) kv_len, 64);
+  const size_t qo_size    = align_up((size_t) qo_len * n_heads * head_dim * sizeof(float), 128);
+  const size_t kv_size    = align_up((size_t) kv_len * n_kv_heads * head_dim * sizeof(__fp16), 128);
+  const size_t mask_size  = align_up((size_t) qo_len * kv_pad_len * sizeof(__fp16), 128);
+
+  if (alloc_shared_mem_buf((void **) &q, &fd_q, qo_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &dsp_o, &fd_o, qo_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &k, &fd_k, kv_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &v, &fd_v, kv_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &mask, &fd_mask, mask_size)) {
+    goto end;
+  }
+
+  ref_o = (float *) malloc(qo_size);
+  if (!ref_o) {
+    goto end;
+  }
+
+  const size_t qo_elems = (size_t) qo_len * n_heads * head_dim;
+  const size_t kv_elems = (size_t) kv_len * n_kv_heads * head_dim;
+  for (size_t i = 0; i < qo_elems; ++i) {
+    q[i] = (rand() % 20000) * 3e-4f - 3.0f;
+  }
+  for (size_t i = 0; i < kv_elems; ++i) {
+    k[i] = (__fp16) ((rand() % 20000) * 3e-4f - 3.0f);
+    v[i] = (__fp16) ((rand() % 20000) * 3e-4f - 3.0f);
+  }
+  for (int i = 0; i < qo_len; ++i) {
+    for (int j = 0; j < kv_pad_len; ++j) {
+      mask[(size_t) i * kv_pad_len + j] = (j < kv_len && j <= i) ? (__fp16) 0.0f : (__fp16) -200.0f;
+    }
+  }
+
+  {
+    struct RequestHeader req_hdr = {
+      .state = 0,
+      .type  = REQUEST_TYPE_OP_COMPUTE,
+    };
+    struct OpComputeRequest compute_req = {
+      .op = HTP_OPS_FLASH_ATTN_QO_F32_KV_F16,
+    };
+    struct FlashAttnParams params = {
+      .o          = { .fd = fd_o, .offset = 0, },
+      .q          = { .fd = fd_q, .offset = 0, },
+      .k          = { .fd = fd_k, .offset = 0, },
+      .v          = { .fd = fd_v, .offset = 0, },
+      .mask       = { .fd = fd_mask, .offset = 0, },
+      .qo_len     = qo_len,
+      .kv_len     = kv_len,
+      .n_heads    = n_heads,
+      .n_kv_heads = n_kv_heads,
+      .head_dim   = head_dim,
+    };
+
+    size_t req_size     = sizeof(req_hdr) + sizeof(compute_req) + sizeof(params);
+    msg->state.d        = 0;
+    msg->n_reqs         = 1;
+    msg->req_offsets[0] = message_header_size(msg);
+    msg->req_offsets[1] = msg->req_offsets[0] + req_size;
+
+    uint8_t *p                  = (uint8_t *) message_header_get_request_ptr(msg, 0);
+    *(struct RequestHeader *) p = req_hdr;
+    p += sizeof(struct RequestHeader);
+    *(struct OpComputeRequest *) p = compute_req;
+    p += sizeof(struct OpComputeRequest);
+    *(struct FlashAttnParams *) p = params;
+  }
+
+  int64_t t0      = get_time_us();
+  msg->state.v[0] = 1;
+  while (msg->state.v[1] != 1) {
+  }
+  int64_t chan_elapsed_us = get_time_us() - t0;
+  fprintf(stderr, "flash_attn_f32 CHAN took %ld us\n", chan_elapsed_us);
+
+  err = message_header_get_request_ptr(msg, 0)->state;
+  if (err != 0) {
+    fprintf(stderr, "%s: CHAN failed with %x\n", __func__, err);
+    goto end;
+  }
+
+  int64_t cpu_t0 = get_time_us();
+  flash_attn_f32_ref(ref_o, q, k, v, mask, qo_len, kv_len, n_heads, n_kv_heads, head_dim);
+  int64_t cpu_elapsed_us = get_time_us() - cpu_t0;
+
+  fprintf(stderr, "flash_attn_f32 CPU(ref) took %ld us, DSP(CHAN) %ld us\n", cpu_elapsed_us, chan_elapsed_us);
+
+  int n_failed = 0;
+  for (size_t i = 0; i < qo_elems; ++i) {
+    if (!nearly_equal_f32(ref_o[i], dsp_o[i], 2e-2f, 1e-3f)) {
+      n_failed++;
+      if (n_failed < 16) {
+        fprintf(stderr, "flash_attn_f32: index %d, ref val=%.6f, dsp val=%.6f\n", (int) i, ref_o[i], dsp_o[i]);
+      }
+    }
+  }
+  passed = (n_failed == 0);
+
+end:
+  if (fd_o >= 0 && fd_q >= 0 && fd_k >= 0 && fd_v >= 0 && fd_mask >= 0) {
+    int map_fds[5] = { fd_o, fd_q, fd_k, fd_v, fd_mask };
+    int map_err    = put_fd_maps_chan(chan, map_fds, 5);
+    if (map_err != 0) {
+      fprintf(stderr, "flash_attn_f32: RPCMEM_MAP put failed with %x\n", map_err);
+    }
+  }
+
+  if (q) {
+    free_shared_mem_buf(q, fd_q, qo_size);
+  }
+  if (dsp_o) {
+    free_shared_mem_buf(dsp_o, fd_o, qo_size);
+  }
+  if (k) {
+    free_shared_mem_buf(k, fd_k, kv_size);
+  }
+  if (v) {
+    free_shared_mem_buf(v, fd_v, kv_size);
+  }
+  if (mask) {
+    free_shared_mem_buf(mask, fd_mask, mask_size);
+  }
+  if (ref_o) {
+    free(ref_o);
+  }
+
+  fprintf(stderr, passed ? "flash_attn_f32 passed\n" : "flash_attn_f32 failed\n");
+}
+
 static const char *binary_op_name(uint32_t op) {
   switch (op) {
     case HTP_OPS_ADD_F32:
@@ -1001,6 +1211,26 @@ int main(int argc, char **argv) {
     test_unary_elemwise_f32_chan(chan, HTP_OPS_GELU_F32, ne0, ne1);
     test_unary_elemwise_f32_chan(chan, HTP_OPS_LAYER_NORM_F32, ne0, ne1);
     test_unary_elemwise_f32_chan(chan, HTP_OPS_ROPE_F32, ne0, ne1);
+  }
+
+  struct FlashAttnTestCfg {
+    int qo_len;
+    int kv_len;
+    int n_heads;
+    int n_kv_heads;
+    int head_dim;
+  };
+  const struct FlashAttnTestCfg fa_cfgs[] = {
+    { 32, 64, 8, 2, 128 },     // small
+    { 64, 128, 8, 2, 128 },    // medium
+    { 128, 512, 12, 3, 128 },  // large
+  };
+  const int n_fa_cfgs = (int) (sizeof(fa_cfgs) / sizeof(fa_cfgs[0]));
+  for (int i = 0; i < n_fa_cfgs; ++i) {
+    fprintf(stderr, "\n===== Running flash_attn test #%d: qo=%d kv=%d h=%d kv_h=%d d=%d =====\n", i,
+            fa_cfgs[i].qo_len, fa_cfgs[i].kv_len, fa_cfgs[i].n_heads, fa_cfgs[i].n_kv_heads, fa_cfgs[i].head_dim);
+    test_flash_attn_f32_chan(chan, fa_cfgs[i].qo_len, fa_cfgs[i].kv_len, fa_cfgs[i].n_heads, fa_cfgs[i].n_kv_heads,
+                             fa_cfgs[i].head_dim);
   }
 
   htp_ops_destroy_channel(get_global_handle());
