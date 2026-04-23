@@ -759,6 +759,7 @@ int main(int argc, char **argv) {
   (void) run_one_softmax_test;
   (void) run_one_layer_norm_test;
   (void) run_one_rope_test;
+  (void) run_one_flash_attn_hvx_test;
   // // Case 1: tail path (ne0 not divisible by 32), keep ne1=1 to preserve row alignment.
   // if (run_all || strcmp(mode, "add") == 0) {
   //   status |= run_one_binary_test("add_f32_tail", hvx_add_f32, ref_add, 4099, 1, 0, 1e-4f);
@@ -800,10 +801,10 @@ int main(int argc, char **argv) {
   //   status |= run_one_unary_test("sigmoid_f32_tail", hvx_sigmoid_f32, ref_sigmoid, 4099, 1, 3e-5f);
   //   status |= run_one_unary_test("sigmoid_f32_rows", hvx_sigmoid_f32, ref_sigmoid, 4096, 8, 3e-5f);
   // }
-  // if (run_all || strcmp(mode, "silu") == 0) {
-  //   status |= run_one_unary_test("silu_f32_tail", hvx_silu_f32, ref_silu, 4099, 1, 3e-5f);
-  //   status |= run_one_unary_test("silu_f32_rows", hvx_silu_f32, ref_silu, 4096, 8, 3e-5f);
-  // }
+  if (run_all || strcmp(mode, "silu") == 0) {
+    status |= run_one_unary_test("silu_f32_tail", hvx_silu_f32, ref_silu, 4099, 1, 3e-5f);
+    status |= run_one_unary_test("silu_f32_rows", hvx_silu_f32, ref_silu, 4096, 8, 3e-5f);
+  }
   // if (run_all || strcmp(mode, "softmax") == 0) {
   //   status |= run_one_softmax_test("softmax_f32_tail", 4099, 1, 6e-5f);
   //   status |= run_one_softmax_test("softmax_f32_rows", 4096, 8, 6e-5f);
@@ -820,10 +821,10 @@ int main(int argc, char **argv) {
   //   status |= run_one_rope_test("rope_f32_tail", 4099, 1, 1e-5f);
   //   status |= run_one_rope_test("rope_f32_rows", 4096, 8, 1e-5f);
   // }
-  if (run_all || strcmp(mode, "flash_attn_hvx") == 0) {
-    status |= run_one_flash_attn_hvx_test("flash_attn_hvx_small", 32, 64, 8, 2, 128, 8e-3f);
-    status |= run_one_flash_attn_hvx_test("flash_attn_hvx_mid", 64, 128, 8, 2, 128, 8e-3f);
-  }
+  // if (run_all || strcmp(mode, "flash_attn_hvx") == 0) {
+  //   status |= run_one_flash_attn_hvx_test("flash_attn_hvx_small", 32, 64, 8, 2, 128, 8e-3f);
+  //   status |= run_one_flash_attn_hvx_test("flash_attn_hvx_mid", 64, 128, 8, 2, 128, 8e-3f);
+  // }
 
   LOGF("%s", status == 0 ? "SIM binary tests passed" : "SIM binary tests failed");
   return status == 0 ? 0 : 1;

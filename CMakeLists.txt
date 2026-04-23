@@ -88,6 +88,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/commu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/power.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/hmx_mgr.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/op_parallel.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/worker_pool.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/mmap_mgr.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/op_executor.cc
@@ -132,7 +133,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn_hvx.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/layer_norm.c
     )
-
+    target_compile_definitions(htp_ops_sim PRIVATE HTP_OPS_SIM_TEST=1)
     # Enable HMX inline assembly
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mhmx")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mhmx")

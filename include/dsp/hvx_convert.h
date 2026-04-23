@@ -19,22 +19,22 @@ static HVX_INLINE_ALWAYS HVX_Vector Q6_Vhf_equals_Vh(HVX_Vector v_h) {
 }
 #endif
 
-#ifndef Q6_Vh_equals_Vhf
-static HVX_INLINE_ALWAYS HVX_Vector Q6_Vh_equals_Vhf(HVX_Vector v_hf) {
-  _Alignas(VLEN) uint16_t in[VLEN / sizeof(uint16_t)];
-  _Alignas(VLEN) int16_t  out[VLEN / sizeof(int16_t)];
+// #ifndef Q6_Vh_equals_Vhf
+// static HVX_INLINE_ALWAYS HVX_Vector Q6_Vh_equals_Vhf(HVX_Vector v_hf) {
+//   _Alignas(VLEN) uint16_t in[VLEN / sizeof(uint16_t)];
+//   _Alignas(VLEN) int16_t  out[VLEN / sizeof(int16_t)];
 
-  vmem(in) = v_hf;
-  for (int i = 0; i < (int) (VLEN / sizeof(uint16_t)); ++i) {
-    union {
-      __fp16   f;
-      uint16_t u;
-    } cvt = { .u = in[i] };
-    out[i] = (int16_t) cvt.f;
-  }
-  return vmem(out);
-}
-#endif
+//   vmem(in) = v_hf;
+//   for (int i = 0; i < (int) (VLEN / sizeof(uint16_t)); ++i) {
+//     union {
+//       __fp16   f;
+//       uint16_t u;
+//     } cvt = { .u = in[i] };
+//     out[i] = (int16_t) cvt.f;
+//   }
+//   return vmem(out);
+// }
+// #endif
 
 static HVX_INLINE_ALWAYS HVX_Vector hvx_my_wsf_to_vhf(HVX_Vector v1, HVX_Vector v0) {
   const HVX_Vector v_zero = Q6_V_vzero();
