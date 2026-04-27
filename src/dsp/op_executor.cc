@@ -226,6 +226,24 @@ int execute_op_simple(struct OpComputeRequest *req) {
       }
       break;
 
+    case HTP_OPS_BIAS_ADD_SILU_MUL_F32:
+      {
+        auto   params     = reinterpret_cast<BiasAddSiluMulF32Params *>(req->payload);
+        size_t tensor_sz  = params->ne0 * params->ne1 * sizeof(float);
+        size_t bias_sz    = params->ne0 * sizeof(float);
+
+        add_buffer(out_bufs, params->dst, tensor_sz);
+        add_buffer(in_bufs, params->src, tensor_sz);
+        add_buffer(in_bufs, params->bias, bias_sz);
+        add_buffer(in_bufs, params->mul, tensor_sz);
+
+        validate_in_bufs();
+        ret = hvx_bias_add_silu_mul_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), (const float *) IN_PTR(1),
+                                        (const float *) IN_PTR(2), params->ne0, params->ne1);
+        validate_out_bufs();
+      }
+      break;
+
     case HTP_OPS_SOFTMAX_F32:
       {
         auto   params = reinterpret_cast<UnaryElemwiseF32Params *>(req->payload);

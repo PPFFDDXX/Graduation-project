@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <HAP_perf.h>
 
 #include "dsp/hvx_internal.h"
 #include "dsp/ops.h"
@@ -84,6 +85,18 @@ static void ref_sigmoid(float *dst, const float *src, int n) {
 static void ref_silu(float *dst, const float *src, int n) {
   for (int i = 0; i < n; ++i) {
     dst[i] = src[i] / (1.0f + expf(-src[i]));
+  }
+}
+
+static void ref_bias_add_silu_mul(float *dst, const float *src, const float *bias, const float *mul, int ne0, int ne1) {
+  for (int j = 0; j < ne1; ++j) {
+    float       *y = dst + j * ne0;
+    const float *x = src + j * ne0;
+    const float *m = mul + j * ne0;
+    for (int i = 0; i < ne0; ++i) {
+      float t = x[i] + bias[i];
+      y[i]    = (t / (1.0f + expf(-t))) * m[i];
+    }
   }
 }
 
@@ -428,6 +441,194 @@ static int run_one_unary_test(const char *name, unary_op_fn fn, void (*ref_fn)(f
   return n_fail == 0 ? 0 : -1;
 }
 
+static int run_one_bias_add_silu_mul_fusion_test(const char *name, int ne0, int ne1, float tol) {
+  const int n = ne0 * ne1;
+
+  float *src = NULL;
+  float *bias = NULL;
+  float *mul = NULL;
+  float *bias_full = NULL;
+  float *dst_fused = NULL;
+  float *dst_unfused = NULL;
+  float *tmp0 = NULL;
+  float *tmp1 = NULL;
+  float *ref = NULL;
+
+  if (posix_memalign((void **) &src, VLEN, (size_t) n * sizeof(float)) != 0 ||
+      posix_memalign((void **) &bias, VLEN, (size_t) ne0 * sizeof(float)) != 0 ||
+      posix_memalign((void **) &mul, VLEN, (size_t) n * sizeof(float)) != 0 ||
+      posix_memalign((void **) &bias_full, VLEN, (size_t) n * sizeof(float)) != 0 ||
+      posix_memalign((void **) &dst_fused, VLEN, (size_t) n * sizeof(float)) != 0 ||
+      posix_memalign((void **) &dst_unfused, VLEN, (size_t) n * sizeof(float)) != 0 ||
+      posix_memalign((void **) &tmp0, VLEN, (size_t) n * sizeof(float)) != 0 ||
+      posix_memalign((void **) &tmp1, VLEN, (size_t) n * sizeof(float)) != 0 ||
+      posix_memalign((void **) &ref, VLEN, (size_t) n * sizeof(float)) != 0) {
+    LOGF("%s: allocation failed", name);
+    free(src);
+    free(bias);
+    free(mul);
+    free(bias_full);
+    free(dst_fused);
+    free(dst_unfused);
+    free(tmp0);
+    free(tmp1);
+    free(ref);
+    return -1;
+  }
+
+  for (int i = 0; i < ne0; ++i) {
+    bias[i] = rng_f32(-2.0f, 2.0f);
+  }
+  for (int j = 0; j < ne1; ++j) {
+    float *b = bias_full + j * ne0;
+    for (int i = 0; i < ne0; ++i) {
+      b[i] = bias[i];
+    }
+  }
+  for (int i = 0; i < n; ++i) {
+    src[i] = rng_f32(-10.0f, 10.0f);
+    mul[i] = rng_f32(-10.0f, 10.0f);
+  }
+
+  const int warmup = 10;
+  const int repeat = 20;
+  int       rc     = 0;
+
+  for (int t = 0; t < warmup; ++t) {
+    rc = hvx_bias_add_silu_mul_f32(dst_fused, src, bias, mul, ne0, ne1);
+    if (rc != 0) {
+      break;
+    }
+    rc = hvx_add_f32(tmp0, src, bias_full, ne0, ne1);
+    if (rc != 0) {
+      break;
+    }
+    rc = hvx_silu_f32(tmp1, tmp0, ne0, ne1);
+    if (rc != 0) {
+      break;
+    }
+    rc = hvx_mpy_f32(dst_unfused, tmp1, mul, ne0, ne1);
+    if (rc != 0) {
+      break;
+    }
+  }
+  if (rc != 0) {
+    LOGF("%s: warmup failed, rc=%d", name, rc);
+    free(src);
+    free(bias);
+    free(mul);
+    free(bias_full);
+    free(dst_fused);
+    free(dst_unfused);
+    free(tmp0);
+    free(tmp1);
+    free(ref);
+    return -1;
+  }
+
+  uint64_t p0 = HAP_perf_get_pcycles();
+  for (int t = 0; t < repeat; ++t) {
+    rc = hvx_bias_add_silu_mul_f32(dst_fused, src, bias, mul, ne0, ne1);
+    if (rc != 0) {
+      break;
+    }
+  }
+  uint64_t fused_cycles = HAP_perf_get_pcycles() - p0;
+  if (rc != 0) {
+    LOGF("%s: fused run failed, rc=%d", name, rc);
+    free(src);
+    free(bias);
+    free(mul);
+    free(bias_full);
+    free(dst_fused);
+    free(dst_unfused);
+    free(tmp0);
+    free(tmp1);
+    free(ref);
+    return -1;
+  }
+
+  p0 = HAP_perf_get_pcycles();
+  for (int t = 0; t < repeat; ++t) {
+    rc = hvx_add_f32(tmp0, src, bias_full, ne0, ne1);
+    if (rc != 0) {
+      break;
+    }
+    rc = hvx_silu_f32(tmp1, tmp0, ne0, ne1);
+    if (rc != 0) {
+      break;
+    }
+    rc = hvx_mpy_f32(dst_unfused, tmp1, mul, ne0, ne1);
+    if (rc != 0) {
+      break;
+    }
+  }
+  uint64_t unfused_cycles = HAP_perf_get_pcycles() - p0;
+  if (rc != 0) {
+    LOGF("%s: unfused run failed, rc=%d", name, rc);
+    free(src);
+    free(bias);
+    free(mul);
+    free(bias_full);
+    free(dst_fused);
+    free(dst_unfused);
+    free(tmp0);
+    free(tmp1);
+    free(ref);
+    return -1;
+  }
+
+  ref_bias_add_silu_mul(ref, src, bias, mul, ne0, ne1);
+
+  int   n_fail_fused   = 0;
+  int   n_fail_unfused = 0;
+  float max_diff_fused = 0.0f;
+  float max_diff_unfused = 0.0f;
+  for (int i = 0; i < n; ++i) {
+    const float d_f = my_fabsf(dst_fused[i] - ref[i]);
+    const float d_u = my_fabsf(dst_unfused[i] - ref[i]);
+    if (d_f > max_diff_fused) {
+      max_diff_fused = d_f;
+    }
+    if (d_u > max_diff_unfused) {
+      max_diff_unfused = d_u;
+    }
+    if (d_f > tol) {
+      ++n_fail_fused;
+      if (n_fail_fused <= 8) {
+        LOGF("%s fused mismatch @%d: dst=%g ref=%g diff=%g", name, i, dst_fused[i], ref[i], d_f);
+      }
+    }
+    if (d_u > tol) {
+      ++n_fail_unfused;
+      if (n_fail_unfused <= 8) {
+        LOGF("%s unfused mismatch @%d: dst=%g ref=%g diff=%g", name, i, dst_unfused[i], ref[i], d_u);
+      }
+    }
+  }
+
+  const double fused_avg = (repeat > 0) ? ((double) fused_cycles / (double) repeat) : 0.0;
+  const double unfused_avg = (repeat > 0) ? ((double) unfused_cycles / (double) repeat) : 0.0;
+  const double speedup = (fused_cycles > 0) ? ((double) unfused_cycles / (double) fused_cycles) : 0.0;
+
+  LOGF("%s: ne0=%d ne1=%d repeats=%d, fused_pcycles=%llu (avg %.2f), unfused_pcycles=%llu (avg %.2f), speedup=%.3fx",
+       name, ne0, ne1, repeat, (unsigned long long) fused_cycles, fused_avg, (unsigned long long) unfused_cycles,
+       unfused_avg, speedup);
+  LOGF("%s: max_diff_fused=%g max_diff_unfused=%g failed_fused=%d failed_unfused=%d", name, max_diff_fused,
+       max_diff_unfused, n_fail_fused, n_fail_unfused);
+
+  free(src);
+  free(bias);
+  free(mul);
+  free(bias_full);
+  free(dst_fused);
+  free(dst_unfused);
+  free(tmp0);
+  free(tmp1);
+  free(ref);
+  return (n_fail_fused == 0 && n_fail_unfused == 0) ? 0 : -1;
+}
+
 static int run_one_softmax_test(const char *name, int ne0, int ne1, float tol) {
   const int n = ne0 * ne1;
 
@@ -751,11 +952,13 @@ int main(int argc, char **argv) {
   (void) ref_leaky_relu;
   (void) ref_sigmoid;
   (void) ref_silu;
+  (void) ref_bias_add_silu_mul;
   (void) ref_gelu;
   (void) ref_rope;
   (void) ref_flash_attn_hvx_f32;
   (void) run_one_binary_test;
   (void) run_one_unary_test;
+  (void) run_one_bias_add_silu_mul_fusion_test;
   (void) run_one_softmax_test;
   (void) run_one_layer_norm_test;
   (void) run_one_rope_test;
@@ -801,9 +1004,13 @@ int main(int argc, char **argv) {
   //   status |= run_one_unary_test("sigmoid_f32_tail", hvx_sigmoid_f32, ref_sigmoid, 4099, 1, 3e-5f);
   //   status |= run_one_unary_test("sigmoid_f32_rows", hvx_sigmoid_f32, ref_sigmoid, 4096, 8, 3e-5f);
   // }
-  if (run_all || strcmp(mode, "silu") == 0) {
-    status |= run_one_unary_test("silu_f32_tail", hvx_silu_f32, ref_silu, 4099, 1, 3e-5f);
-    status |= run_one_unary_test("silu_f32_rows", hvx_silu_f32, ref_silu, 4096, 8, 3e-5f);
+  // if (run_all || strcmp(mode, "silu") == 0) {
+  //   status |= run_one_unary_test("silu_f32_tail", hvx_silu_f32, ref_silu, 4099, 1, 3e-5f);
+  //   status |= run_one_unary_test("silu_f32_rows", hvx_silu_f32, ref_silu, 4096, 8, 3e-5f);
+  // }
+  if (run_all || strcmp(mode, "bias_add_silu_mul") == 0 || strcmp(mode, "fusion") == 0) {
+    status |= run_one_bias_add_silu_mul_fusion_test("bias_add_silu_mul_f32_tail", 4099, 1, 2e-4f);
+    status |= run_one_bias_add_silu_mul_fusion_test("bias_add_silu_mul_f32_rows", 4096, 8, 2e-4f);
   }
   // if (run_all || strcmp(mode, "softmax") == 0) {
   //   status |= run_one_softmax_test("softmax_f32_tail", 4099, 1, 6e-5f);

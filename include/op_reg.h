@@ -13,6 +13,7 @@ enum HtpOpsIndex {
   HTP_OPS_LEAKY_RELU_F32,
   HTP_OPS_SIGMOID_F32,
   HTP_OPS_SILU_F32,
+  HTP_OPS_BIAS_ADD_SILU_MUL_F32,
   HTP_OPS_SOFTMAX_F32,
   HTP_OPS_GELU_F32,
   HTP_OPS_ROPE_F32,
@@ -64,6 +65,15 @@ struct BinaryElemwiseF32Params{
   struct RpcmemBufAddr src1;
   int32_t       ne0;
   int32_t       ne1;
+} __attribute__((packed));
+
+struct BiasAddSiluMulF32Params {
+  struct RpcmemBufAddr dst;
+  struct RpcmemBufAddr src;
+  struct RpcmemBufAddr bias;
+  struct RpcmemBufAddr mul;
+  int32_t              ne0;
+  int32_t              ne1;
 } __attribute__((packed));
 
 struct UnaryElemwiseF32Params {

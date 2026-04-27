@@ -30,6 +30,8 @@ int hvx_leaky_relu_f32(float *restrict dst, const float *restrict src, int ne0, 
 int hvx_sigmoid_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
 
 int hvx_silu_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
+int hvx_bias_add_silu_mul_f32(float *restrict dst, const float *restrict src, const float *restrict bias,
+                              const float *restrict mul, int ne0, int ne1);
 
 int hvx_softmax_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
 

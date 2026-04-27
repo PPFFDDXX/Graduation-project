@@ -98,6 +98,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn_hvx.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/add.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/bias_add_silu_mul.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/div.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/sub.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mpy.c
@@ -119,7 +120,9 @@ else()
     # Standalone simulator test executable (no host RPC dependency)
     add_executable(htp_ops_sim
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/sim_tests_main.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/op_parallel.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/add.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/bias_add_silu_mul.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/sub.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mpy.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/div.c

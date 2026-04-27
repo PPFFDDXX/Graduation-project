@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include "dsp/hvx_internal.h"
+#include "dsp/op_parallel.h"
 
 //生成 RoPE 的 逆频率表 inv_freq
 static inline void rope_build_inv_freq(float *inv_freq, int half, float theta_base) {
@@ -97,6 +98,47 @@ static inline void hvx_rope_f32_inner(float *restrict dst, const float *restrict
   }
 }
 
+typedef struct {
+  float       *dst;
+  const float *src;
+  const float *inv_freq;
+  const float *step_cos;
+  const float *step_sin;
+  int          ne0;
+  int          half;
+} rope_parallel_ctx_t;
+
+static void hvx_rope_f32_rows_fn(void *ctx, int row_begin, int row_end) {
+  rope_parallel_ctx_t *p = (rope_parallel_ctx_t *) ctx;
+  const int            half = p->half;
+
+  float *cur_cos = NULL;
+  float *cur_sin = NULL;
+  if (posix_memalign((void **) &cur_cos, VLEN, (size_t) half * sizeof(float)) != 0 ||
+      posix_memalign((void **) &cur_sin, VLEN, (size_t) half * sizeof(float)) != 0) {
+    free(cur_cos);
+    free(cur_sin);
+    return;
+  }
+
+  // Initialize phase for row_begin: exp(i * row_begin * inv_freq[k]).
+  for (int i = 0; i < half; ++i) {
+    const float theta = (float) row_begin * p->inv_freq[i];
+    cur_cos[i]        = cosf(theta);
+    cur_sin[i]        = sinf(theta);
+  }
+
+  for (int j = row_begin; j < row_end; ++j) {
+    float       *out_row = p->dst + j * p->ne0;
+    const float *in_row  = p->src + j * p->ne0;
+    hvx_rope_f32_inner(out_row, in_row, p->ne0, cur_cos, cur_sin);
+    rope_update_phase_hvx(cur_cos, cur_sin, p->step_cos, p->step_sin, half);
+  }
+
+  free(cur_cos);
+  free(cur_sin);
+}
+
 int hvx_rope_f32(float *restrict dst, const float *restrict src, int ne0, int ne1) {
   const float theta_base = 10000.0f;
   const int   half       = ne0 / 2;
@@ -137,11 +179,26 @@ int hvx_rope_f32(float *restrict dst, const float *restrict src, int ne0, int ne
     cur_sin[i] = 0.0f;
   }
 
-  for (int j = 0; j < ne1; ++j) {
-    float       *out_row = dst + j * ne0;
-    const float *in_row  = src + j * ne0;
-    hvx_rope_f32_inner(out_row, in_row, ne0, cur_cos, cur_sin);
-    rope_update_phase_hvx(cur_cos, cur_sin, step_cos, step_sin, half);
+  rope_parallel_ctx_t ctx = {
+    .dst      = dst,
+    .src      = src,
+    .inv_freq = inv_freq,
+    .step_cos = step_cos,
+    .step_sin = step_sin,
+    .ne0      = ne0,
+    .half     = half,
+  };
+
+  // Keep chunk reasonably large to amortize row-begin phase init.
+  const int min_rows_per_task = 16;
+  if (op_parallel_for_rows(ne1, min_rows_per_task, hvx_rope_f32_rows_fn, &ctx) != 0) {
+    // Fallback: single-thread sequential recurrence.
+    for (int j = 0; j < ne1; ++j) {
+      float       *out_row = dst + j * ne0;
+      const float *in_row  = src + j * ne0;
+      hvx_rope_f32_inner(out_row, in_row, ne0, cur_cos, cur_sin);
+      rope_update_phase_hvx(cur_cos, cur_sin, step_cos, step_sin, half);
+    }
   }
 
   free(inv_freq);

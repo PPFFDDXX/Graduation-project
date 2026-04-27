@@ -7,6 +7,7 @@
 
 #include "dsp/hvx_convert.h"
 #include "dsp/hvx_internal.h"
+#include "dsp/op_parallel.h"
 #include "dsp/utils.h"
 
 #define FLASH_ATTN_HVX_BLOCK_SIZE 64
@@ -142,6 +143,126 @@ static inline void hvx_vec_zero_f32(float *restrict y, int d) {
   }
 }
 
+typedef struct {
+  float       *O;
+  const float *Q;
+  const __fp16 *K;
+  const __fp16 *V;
+  const __fp16 *mask;
+  int          qo_len;
+  int          kv_len;
+  int          n_heads;
+  int          n_kv_heads;
+  int          head_dim;
+  int          head_dim_pad;
+  int          gqa_factor;
+  float        qk_scale;
+  size_t       kv_pad_len;
+  volatile int status;
+} flash_attn_hvx_parallel_ctx_t;
+
+static inline void flash_attn_hvx_compute_one_row(const flash_attn_hvx_parallel_ctx_t *p, int iq, int h,
+                                                   __fp16 *restrict q_row_hf) {
+  const int h_kv = h / p->gqa_factor;
+
+  float *restrict       o_row = p->O + ((size_t) iq * p->n_heads + h) * p->head_dim;
+  const float *restrict q_row = p->Q + ((size_t) iq * p->n_heads + h) * p->head_dim;
+  hvx_copy_f16_f32_row(q_row_hf, q_row, p->head_dim);
+
+  hvx_vec_zero_f32(o_row, p->head_dim);
+
+  float m = -INFINITY;
+  float l = 0.0f;
+
+  for (int jb = 0; jb < p->kv_len; jb += FLASH_ATTN_HVX_BLOCK_SIZE) {
+    const int block_size = Q6_R_min_RR(FLASH_ATTN_HVX_BLOCK_SIZE, p->kv_len - jb);
+
+    const __fp16 *k_base = p->K + ((size_t) jb * p->n_kv_heads + h_kv) * p->head_dim;
+    const __fp16 *v_base = p->V + ((size_t) jb * p->n_kv_heads + h_kv) * p->head_dim;
+
+    l2fetch(k_base, p->n_kv_heads * p->head_dim * (int) sizeof(__fp16), p->head_dim * (int) sizeof(__fp16), block_size,
+            0);
+    l2fetch(v_base, p->n_kv_heads * p->head_dim * (int) sizeof(__fp16), p->head_dim * (int) sizeof(__fp16), block_size,
+            0);
+
+    float scores[FLASH_ATTN_HVX_BLOCK_SIZE];
+    float block_max = -INFINITY;
+
+    for (int t = 0; t < block_size; ++t) {
+      const __fp16 *k_row = k_base + (size_t) t * p->n_kv_heads * p->head_dim;
+      float score          = hvx_dot_f16_f16_aa(q_row_hf, k_row, p->head_dim, p->qk_scale);
+
+      if (p->mask && (float) p->mask[(size_t) iq * p->kv_pad_len + (jb + t)] < -128.0f) {
+        score = -INFINITY;
+      }
+
+      scores[t] = score;
+      if (score > block_max) {
+        block_max = score;
+      }
+    }
+
+    const float m_new = (block_max > m) ? block_max : m;
+
+    if (isfinite(m_new)) {
+      float scale_old = 0.0f;
+      if (isfinite(m)) {
+        scale_old = exp2f(m - m_new);
+      }
+
+      if (scale_old > 0.0f) {
+        hvx_vec_scale_f32(o_row, p->head_dim, scale_old);
+        l *= scale_old;
+      } else {
+        hvx_vec_zero_f32(o_row, p->head_dim);
+        l = 0.0f;
+      }
+
+      for (int t = 0; t < block_size; ++t) {
+        if (!isfinite(scores[t])) {
+          continue;
+        }
+
+        const float p_attn = exp2f(scores[t] - m_new);
+        l += p_attn;
+
+        const __fp16 *v_row = v_base + (size_t) t * p->n_kv_heads * p->head_dim;
+        hvx_mad_f32_f16_aa(o_row, v_row, p_attn, p->head_dim);
+      }
+
+      m = m_new;
+    }
+  }
+
+  if (l > 0.0f) {
+    hvx_vec_scale_f32(o_row, p->head_dim, 1.0f / l);
+  } else {
+    hvx_vec_zero_f32(o_row, p->head_dim);
+  }
+}
+
+static void flash_attn_hvx_rows_fn(void *ctx, int row_begin, int row_end) {
+  flash_attn_hvx_parallel_ctx_t *p = (flash_attn_hvx_parallel_ctx_t *) ctx;
+
+  if (p->status != 0) {
+    return;
+  }
+
+  __fp16 *q_row_hf = NULL;
+  if (posix_memalign((void **) &q_row_hf, VLEN, (size_t) p->head_dim_pad * sizeof(__fp16)) != 0) {
+    __sync_lock_test_and_set((int *) &p->status, -1);
+    return;
+  }
+
+  for (int row = row_begin; row < row_end; ++row) {
+    const int iq = row / p->n_heads;
+    const int h  = row - iq * p->n_heads;
+    flash_attn_hvx_compute_one_row(p, iq, h, q_row_hf);
+  }
+
+  free(q_row_hf);
+}
+
 int simple_flash_attn_hvx_f32(float *restrict O, const float *restrict Q, const __fp16 *restrict K,
                               const __fp16 *restrict V, const __fp16 *restrict mask, int qo_len, int kv_len,
                               int n_heads, int n_kv_heads, int head_dim) {
@@ -155,97 +276,34 @@ int simple_flash_attn_hvx_f32(float *restrict O, const float *restrict Q, const 
     return -1;
   }
 
-  const int   gqa_factor = n_heads / n_kv_heads;
+  const int   gqa_factor  = n_heads / n_kv_heads;
   const float qk_scale    = 1.0f / sqrtf((float) head_dim) * 1.4426950408889634f;
   const size_t kv_pad_len = align_up((size_t) kv_len, 64);
-  const int head_dim_pad  = (int) align_up((size_t) head_dim, 64);
+  const int   head_dim_pad = (int) align_up((size_t) head_dim, 64);
 
-  __fp16 *q_row_hf = NULL;
-  if (posix_memalign((void **) &q_row_hf, VLEN, (size_t) head_dim_pad * sizeof(__fp16)) != 0) {
+  flash_attn_hvx_parallel_ctx_t ctx = {
+    .O           = O,
+    .Q           = Q,
+    .K           = K,
+    .V           = V,
+    .mask        = mask,
+    .qo_len      = qo_len,
+    .kv_len      = kv_len,
+    .n_heads     = n_heads,
+    .n_kv_heads  = n_kv_heads,
+    .head_dim    = head_dim,
+    .head_dim_pad = head_dim_pad,
+    .gqa_factor  = gqa_factor,
+    .qk_scale    = qk_scale,
+    .kv_pad_len  = kv_pad_len,
+    .status      = 0,
+  };
+
+  const int n_rows = qo_len * n_heads;
+  const int min_rows_per_task = 2;
+  if (op_parallel_for_rows(n_rows, min_rows_per_task, flash_attn_hvx_rows_fn, &ctx) != 0) {
     return -1;
   }
 
-  for (int h = 0; h < n_heads; ++h) {
-    const int h_kv = h / gqa_factor;
-
-    for (int iq = 0; iq < qo_len; ++iq) {
-      float *restrict o_row       = O + ((size_t) iq * n_heads + h) * head_dim;
-      const float *restrict q_row = Q + ((size_t) iq * n_heads + h) * head_dim;
-      hvx_copy_f16_f32_row(q_row_hf, q_row, head_dim);
-
-      hvx_vec_zero_f32(o_row, head_dim);
-
-      float m = -INFINITY;
-      float l = 0.0f;
-
-      for (int jb = 0; jb < kv_len; jb += FLASH_ATTN_HVX_BLOCK_SIZE) {
-        const int block_size = Q6_R_min_RR(FLASH_ATTN_HVX_BLOCK_SIZE, kv_len - jb);
-
-        const __fp16 *k_base = K + ((size_t) jb * n_kv_heads + h_kv) * head_dim;
-        const __fp16 *v_base = V + ((size_t) jb * n_kv_heads + h_kv) * head_dim;
-
-        l2fetch(k_base, n_kv_heads * head_dim * (int) sizeof(__fp16), head_dim * (int) sizeof(__fp16), block_size,
-                0);
-        l2fetch(v_base, n_kv_heads * head_dim * (int) sizeof(__fp16), head_dim * (int) sizeof(__fp16), block_size,
-                0);
-
-        float scores[FLASH_ATTN_HVX_BLOCK_SIZE];
-        float block_max = -INFINITY;
-
-        for (int t = 0; t < block_size; ++t) {
-          const __fp16 *k_row = k_base + (size_t) t * n_kv_heads * head_dim;
-          float score          = hvx_dot_f16_f16_aa(q_row_hf, k_row, head_dim, qk_scale);
-
-          if (mask && (float) mask[(size_t) iq * kv_pad_len + (jb + t)] < -128.0f) {
-            score = -INFINITY;
-          }
-
-          scores[t] = score;
-          if (score > block_max) {
-            block_max = score;
-          }
-        }
-
-        const float m_new = (block_max > m) ? block_max : m;
-
-        if (isfinite(m_new)) {
-          float scale_old = 0.0f;
-          if (isfinite(m)) {
-            scale_old = exp2f(m - m_new);
-          }
-
-          if (scale_old > 0.0f) {
-            hvx_vec_scale_f32(o_row, head_dim, scale_old);
-            l *= scale_old;
-          } else {
-            hvx_vec_zero_f32(o_row, head_dim);
-            l = 0.0f;
-          }
-
-          for (int t = 0; t < block_size; ++t) {
-            if (!isfinite(scores[t])) {
-              continue;
-            }
-
-            const float p = exp2f(scores[t] - m_new);
-            l += p;
-
-            const __fp16 *v_row = v_base + (size_t) t * n_kv_heads * head_dim;
-            hvx_mad_f32_f16_aa(o_row, v_row, p, head_dim);
-          }
-
-          m = m_new;
-        }
-      }
-
-      if (l > 0.0f) {
-        hvx_vec_scale_f32(o_row, head_dim, 1.0f / l);
-      } else {
-        hvx_vec_zero_f32(o_row, head_dim);
-      }
-    }
-  }
-
-  free(q_row_hf);
-  return 0;
+  return ctx.status;
 }
