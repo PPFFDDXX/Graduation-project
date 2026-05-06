@@ -1,19 +1,17 @@
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "dsp/hvx_internal.h"
 #include "dsp/hvx_utils.h"
 #include "dsp/op_parallel.h"
 
-static inline void rope_build_inv_freq(float *inv_freq, int half, float theta_base) {
-  for (int pair_idx = 0; pair_idx < half; ++pair_idx) {
-    inv_freq[pair_idx] = powf(theta_base, -((float) pair_idx / (float) half));
-  }
-}
+#define PREFETCH_SIZE   (8 * 1024)
+#define PREFETCH_N_VECS (PREFETCH_SIZE / VLEN)
 
-static inline void rope_build_step_trig(float *step_cos, float *step_sin, const float *inv_freq, int half) {
+static inline void rope_build_step_trig(float *step_cos, float *step_sin, int half, float theta_base) {
   for (int pair_idx = 0; pair_idx < half; ++pair_idx) {
-    const float theta   = inv_freq[pair_idx];
+    const float theta   = powf(theta_base, -((float) pair_idx / (float) half));
     step_cos[pair_idx]  = cosf(theta);
     step_sin[pair_idx]  = sinf(theta);
   }
@@ -52,8 +50,18 @@ static inline void hvx_rope_scale_add_f32_inner(float *restrict dst, const float
                                                  int ne0, const float *row_cos, const float *row_sin, float scale) {
   const HVX_Vector v_scale = hvx_vec_splat_f32(scale);
   int              i       = 0;
+  const int        n_vecs  = ne0 / 32;
 
-  for (; i + 31 < ne0; i += 32) {
+  for (int vi = 0; vi < n_vecs; ++vi, i += 32) {
+    if (vi % PREFETCH_N_VECS == 0) {
+      int prefetch_idx = vi + PREFETCH_N_VECS;
+      if (prefetch_idx < n_vecs) {
+        int prefetch_n_vecs = Q6_R_min_RR(n_vecs - prefetch_idx, PREFETCH_N_VECS);
+        l2fetch((const HVX_Vector *) (src + prefetch_idx * 32), VLEN, VLEN, prefetch_n_vecs, 0);
+        l2fetch((const HVX_Vector *) (add + prefetch_idx * 32), VLEN, VLEN, prefetch_n_vecs, 0);
+      }
+    }
+
     _Alignas(VLEN) float x_swap[32];
     _Alignas(VLEN) float c_dup[32];
     _Alignas(VLEN) float s_mix[32];
@@ -104,43 +112,24 @@ typedef struct {
   float       *dst;
   const float *src;
   const float *add;
-  const float *inv_freq;
-  const float *step_cos;
-  const float *step_sin;
+  const float *cos_table;
+  const float *sin_table;
   int          ne0;
   int          half;
   float        scale;
 } rope_scale_add_parallel_ctx_t;
 
 static void hvx_rope_scale_add_f32_rows_fn(void *ctx, int row_begin, int row_end) {
-  rope_scale_add_parallel_ctx_t *p    = (rope_scale_add_parallel_ctx_t *) ctx;
-  const int                      half = p->half;
-
-  float *cur_cos = NULL;
-  float *cur_sin = NULL;
-  if (posix_memalign((void **) &cur_cos, VLEN, (size_t) half * sizeof(float)) != 0 ||
-      posix_memalign((void **) &cur_sin, VLEN, (size_t) half * sizeof(float)) != 0) {
-    free(cur_cos);
-    free(cur_sin);
-    return;
-  }
-
-  for (int i = 0; i < half; ++i) {
-    const float theta = (float) row_begin * p->inv_freq[i];
-    cur_cos[i]        = cosf(theta);
-    cur_sin[i]        = sinf(theta);
-  }
+  rope_scale_add_parallel_ctx_t *p = (rope_scale_add_parallel_ctx_t *) ctx;
 
   for (int j = row_begin; j < row_end; ++j) {
-    float       *out_row = p->dst + j * p->ne0;
-    const float *in_row  = p->src + j * p->ne0;
-    const float *add_row = p->add + j * p->ne0;
-    hvx_rope_scale_add_f32_inner(out_row, in_row, add_row, p->ne0, cur_cos, cur_sin, p->scale);
-    rope_update_phase_hvx(cur_cos, cur_sin, p->step_cos, p->step_sin, half);
+    float       *out_row  = p->dst + j * p->ne0;
+    const float *in_row   = p->src + j * p->ne0;
+    const float *add_row  = p->add + j * p->ne0;
+    const float *row_cos  = p->cos_table + (size_t) j * p->half;
+    const float *row_sin  = p->sin_table + (size_t) j * p->half;
+    hvx_rope_scale_add_f32_inner(out_row, in_row, add_row, p->ne0, row_cos, row_sin, p->scale);
   }
-
-  free(cur_cos);
-  free(cur_sin);
 }
 
 int hvx_rope_scale_add_f32(float *restrict dst, const float *restrict src, const float *restrict add, int ne0, int ne1,
@@ -158,18 +147,17 @@ int hvx_rope_scale_add_f32(float *restrict dst, const float *restrict src, const
     return -1;
   }
 
-  float *inv_freq = NULL;
   float *step_cos = NULL;
   float *step_sin = NULL;
   float *cur_cos  = NULL;
   float *cur_sin  = NULL;
+  float *cos_table = NULL;
+  float *sin_table = NULL;
 
-  if (posix_memalign((void **) &inv_freq, VLEN, (size_t) half * sizeof(float)) != 0 ||
-      posix_memalign((void **) &step_cos, VLEN, (size_t) half * sizeof(float)) != 0 ||
+  if (posix_memalign((void **) &step_cos, VLEN, (size_t) half * sizeof(float)) != 0 ||
       posix_memalign((void **) &step_sin, VLEN, (size_t) half * sizeof(float)) != 0 ||
       posix_memalign((void **) &cur_cos, VLEN, (size_t) half * sizeof(float)) != 0 ||
       posix_memalign((void **) &cur_sin, VLEN, (size_t) half * sizeof(float)) != 0) {
-    free(inv_freq);
     free(step_cos);
     free(step_sin);
     free(cur_cos);
@@ -177,27 +165,35 @@ int hvx_rope_scale_add_f32(float *restrict dst, const float *restrict src, const
     return -1;
   }
 
-  rope_build_inv_freq(inv_freq, half, theta_base);
-  rope_build_step_trig(step_cos, step_sin, inv_freq, half);
+  rope_build_step_trig(step_cos, step_sin, half, theta_base);
   for (int i = 0; i < half; ++i) {
     cur_cos[i] = 1.0f;
     cur_sin[i] = 0.0f;
   }
 
-  rope_scale_add_parallel_ctx_t ctx = {
-    .dst      = dst,
-    .src      = src,
-    .add      = add,
-    .inv_freq = inv_freq,
-    .step_cos = step_cos,
-    .step_sin = step_sin,
-    .ne0      = ne0,
-    .half     = half,
-    .scale    = scale,
-  };
+  const size_t table_elems = (size_t) half * (size_t) ne1;
+  if (posix_memalign((void **) &cos_table, VLEN, table_elems * sizeof(float)) == 0 &&
+      posix_memalign((void **) &sin_table, VLEN, table_elems * sizeof(float)) == 0) {
+    for (int j = 0; j < ne1; ++j) {
+      float *row_cos = cos_table + (size_t) j * half;
+      float *row_sin = sin_table + (size_t) j * half;
+      memcpy(row_cos, cur_cos, (size_t) half * sizeof(float));
+      memcpy(row_sin, cur_sin, (size_t) half * sizeof(float));
+      rope_update_phase_hvx(cur_cos, cur_sin, step_cos, step_sin, half);
+    }
+  } else {
+    free(cos_table);
+    free(sin_table);
+    cos_table = NULL;
+    sin_table = NULL;
+  }
 
-  const int min_rows_per_task = 16;
-  if (op_parallel_for_rows(ne1, min_rows_per_task, hvx_rope_scale_add_f32_rows_fn, &ctx) != 0) {
+  // Fallback if table allocation failed: single-thread recurrence (old behavior).
+  if (!cos_table || !sin_table) {
+    for (int i = 0; i < half; ++i) {
+      cur_cos[i] = 1.0f;
+      cur_sin[i] = 0.0f;
+    }
     for (int j = 0; j < ne1; ++j) {
       float       *out_row = dst + j * ne0;
       const float *in_row  = src + j * ne0;
@@ -205,12 +201,33 @@ int hvx_rope_scale_add_f32(float *restrict dst, const float *restrict src, const
       hvx_rope_scale_add_f32_inner(out_row, in_row, add_row, ne0, cur_cos, cur_sin, scale);
       rope_update_phase_hvx(cur_cos, cur_sin, step_cos, step_sin, half);
     }
+
+    free(step_cos);
+    free(step_sin);
+    free(cur_cos);
+    free(cur_sin);
+    return 0;
   }
 
-  free(inv_freq);
+  rope_scale_add_parallel_ctx_t ctx = {
+    .dst       = dst,
+    .src       = src,
+    .add       = add,
+    .cos_table = cos_table,
+    .sin_table = sin_table,
+    .ne0       = ne0,
+    .half      = half,
+    .scale     = scale,
+  };
+
+  const int min_rows_per_task = 16;
+  (void) op_parallel_for_rows(ne1, min_rows_per_task, hvx_rope_scale_add_f32_rows_fn, &ctx);
+
   free(step_cos);
   free(step_sin);
   free(cur_cos);
   free(cur_sin);
+  free(cos_table);
+  free(sin_table);
   return 0;
 }

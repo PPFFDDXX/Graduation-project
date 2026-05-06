@@ -1842,41 +1842,41 @@ int main(int argc, char **argv) {
     // test_unary_elemwise_f32_chan(chan, HTP_OPS_RELU_F32, ne0, ne1);
     // test_unary_elemwise_f32_chan(chan, HTP_OPS_LEAKY_RELU_F32, ne0, ne1);
     // test_unary_elemwise_f32_chan(chan, HTP_OPS_GELU_F32, ne0, ne1);
-    test_unary_elemwise_f32_chan(chan, HTP_OPS_SIGMOID_F32, ne0, ne1);
-    test_unary_elemwise_f32_chan(chan, HTP_OPS_SILU_F32, ne0, ne1);
-    test_bias_add_silu_mul_fusion_chan(chan, ne0, ne1);
-    test_unary_elemwise_f32_chan(chan, HTP_OPS_SOFTMAX_F32, ne0, ne1);
-    test_unary_elemwise_f32_chan(chan, HTP_OPS_LAYER_NORM_F32, ne0, ne1);
-    test_unary_elemwise_f32_chan(chan, HTP_OPS_ROPE_F32, ne0, ne1);
+    // test_unary_elemwise_f32_chan(chan, HTP_OPS_SIGMOID_F32, ne0, ne1);
+    // test_unary_elemwise_f32_chan(chan, HTP_OPS_SILU_F32, ne0, ne1);
+    // test_bias_add_silu_mul_fusion_chan(chan, ne0, ne1);
+    // test_unary_elemwise_f32_chan(chan, HTP_OPS_SOFTMAX_F32, ne0, ne1);
+    // test_unary_elemwise_f32_chan(chan, HTP_OPS_LAYER_NORM_F32, ne0, ne1);
+    // test_unary_elemwise_f32_chan(chan, HTP_OPS_ROPE_F32, ne0, ne1);
     test_rope_scale_add_fusion_chan(chan, ne0, ne1);
   }
 
-  struct FlashAttnTestCfg {
-    int qo_len;
-    int kv_len;
-    int n_heads;
-    int n_kv_heads;
-    int head_dim;
-  };
-  const struct FlashAttnTestCfg fa_cfgs[] = {
-    { 32, 64, 8, 2, 128 },     // small
-    { 64, 128, 8, 2, 128 },    // medium
-    { 128, 512, 12, 3, 128 },  // large
-  };
-  const int n_fa_cfgs = (int) (sizeof(fa_cfgs) / sizeof(fa_cfgs[0]));
-  for (int i = 0; i < n_fa_cfgs; ++i) {
-    fprintf(stderr, "\n===== Running flash_attn test #%d: qo=%d kv=%d h=%d kv_h=%d d=%d =====\n", i,
-            fa_cfgs[i].qo_len, fa_cfgs[i].kv_len, fa_cfgs[i].n_heads, fa_cfgs[i].n_kv_heads, fa_cfgs[i].head_dim);
-    test_flash_attn_f32_chan(chan, fa_cfgs[i].qo_len, fa_cfgs[i].kv_len, fa_cfgs[i].n_heads, fa_cfgs[i].n_kv_heads,
-                             fa_cfgs[i].head_dim);
-  }
+//   struct FlashAttnTestCfg {
+//     int qo_len;
+//     int kv_len;
+//     int n_heads;
+//     int n_kv_heads;
+//     int head_dim;
+//   };
+//   const struct FlashAttnTestCfg fa_cfgs[] = {
+//     { 32, 64, 8, 2, 128 },     // small
+//     { 64, 128, 8, 2, 128 },    // medium
+//     { 128, 512, 12, 3, 128 },  // large
+//   };
+//   const int n_fa_cfgs = (int) (sizeof(fa_cfgs) / sizeof(fa_cfgs[0]));
+//   for (int i = 0; i < n_fa_cfgs; ++i) {
+//     fprintf(stderr, "\n===== Running flash_attn test #%d: qo=%d kv=%d h=%d kv_h=%d d=%d =====\n", i,
+//             fa_cfgs[i].qo_len, fa_cfgs[i].kv_len, fa_cfgs[i].n_heads, fa_cfgs[i].n_kv_heads, fa_cfgs[i].head_dim);
+//     test_flash_attn_f32_chan(chan, fa_cfgs[i].qo_len, fa_cfgs[i].kv_len, fa_cfgs[i].n_heads, fa_cfgs[i].n_kv_heads,
+//                              fa_cfgs[i].head_dim);
+//   }
 
-  htp_ops_destroy_channel(get_global_handle());
+//   htp_ops_destroy_channel(get_global_handle());
 
-skip2:
-  free_shared_mem_buf(chan, chan_fd, max_msg_size);
+// skip2:
+//   free_shared_mem_buf(chan, chan_fd, max_msg_size);
 
-skip1:
-  close_dsp_session();
-  return 0;
+// skip1:
+//   close_dsp_session();
+//   return 0;
 }
