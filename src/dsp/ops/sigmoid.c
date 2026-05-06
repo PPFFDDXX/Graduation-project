@@ -4,6 +4,7 @@
 #include "dsp/hvx_inverse.h"
 #include "dsp/hvx_math.h"
 #include "dsp/hvx_utils.h"
+#include "dsp/op_parallel.h"
 
 #define PREFETCH_SIZE   (8 * 1024)
 #define PREFETCH_N_VECS (PREFETCH_SIZE / VLEN)
@@ -39,12 +40,38 @@ static inline void hvx_sigmoid_f32_inner(float *restrict dst, const float *restr
   }
 }
 
+typedef struct {
+  float       *dst;
+  const float *src;
+  int          ne0;
+} sigmoid_parallel_ctx_t;
+
+static void hvx_sigmoid_f32_rows_fn(void *ctx, int row_begin, int row_end) {
+  sigmoid_parallel_ctx_t *p = (sigmoid_parallel_ctx_t *) ctx;
+  for (int j = row_begin; j < row_end; ++j) {
+    float       *out_row = p->dst + j * p->ne0;
+    const float *in_row  = p->src + j * p->ne0;
+    hvx_sigmoid_f32_inner(out_row, in_row, p->ne0);
+  }
+}
+
 int hvx_sigmoid_f32(float *restrict dst, const float *restrict src, int ne0, int ne1) {
   if (!dst || !src || !ne0 || !ne1) {
     return -1;
   }
   if (!is_aligned(dst, VLEN) || !is_aligned(src, VLEN)) {
     return -1;
+  }
+
+  sigmoid_parallel_ctx_t ctx = {
+    .dst = dst,
+    .src = src,
+    .ne0 = ne0,
+  };
+
+  const int min_rows_per_task = 4;
+  if (op_parallel_for_rows(ne1, min_rows_per_task, hvx_sigmoid_f32_rows_fn, &ctx) == 0) {
+    return 0;
   }
 
   for (int j = 0; j < ne1; ++j) {

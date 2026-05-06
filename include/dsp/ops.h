@@ -37,6 +37,8 @@ int hvx_softmax_f32(float *restrict dst, const float *restrict src, int ne0, int
 
 int hvx_gelu_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
 int hvx_rope_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
+int hvx_rope_scale_add_f32(float *restrict dst, const float *restrict src, const float *restrict add, int ne0, int ne1,
+                           float scale);
 
 int hmx_mat_mul_permuted_w16a32(float *restrict dst, const float *activation, const __fp16 *permuted_weight, int m,
                                 int k, int n);

@@ -285,6 +285,22 @@ int execute_op_simple(struct OpComputeRequest *req) {
         validate_out_bufs();
       }
       break;
+    
+    case HTP_OPS_ROPE_SCALE_ADD_F32:
+      {
+        auto   params = reinterpret_cast<RopeScaleAddF32Params *>(req->payload);
+        size_t size   = params->ne0 * params->ne1 * sizeof(float);
+
+        add_buffer(out_bufs, params->dst, size);
+        add_buffer(in_bufs, params->src, size);
+        add_buffer(in_bufs, params->add, size);
+
+        validate_in_bufs();
+        ret = hvx_rope_scale_add_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), (const float *) IN_PTR(1),
+                                     params->ne0, params->ne1, params->scale);
+        validate_out_bufs();
+      }
+      break;
 
     case HTP_OPS_MAT_MUL_PERMUTED_W16A32:
       {
@@ -369,23 +385,24 @@ int execute_op_simple(struct OpComputeRequest *req) {
           posix_memalign((void **) &ref_out, 128, qo_size);
 
           validate_in_bufs();
-          ret = simple_flash_attn((__fp16 *) ref_out, (__fp16 *) IN_PTR(0), (__fp16 *) IN_PTR(1), (__fp16 *) IN_PTR(2),
-                                  (__fp16 *) IN_PTR(3), qo_len, kv_len, n_heads, n_kv_heads, head_dim);
+          ret = simple_flash_attn_hvx_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), (const __fp16 *) IN_PTR(1),
+                                          (const __fp16 *) IN_PTR(2), (const __fp16 *) IN_PTR(3), qo_len, kv_len,
+                                          n_heads, n_kv_heads, head_dim);
 
           // check logic
-          naive_flash_attn((float *) OUT_PTR(0), (float *) IN_PTR(0), (__fp16 *) IN_PTR(1), (__fp16 *) IN_PTR(2),
-                           (__fp16 *) IN_PTR(3), qo_len, kv_len, n_heads, n_kv_heads, head_dim);
+          naive_flash_attn(ref_out, (const float *) IN_PTR(0), (const __fp16 *) IN_PTR(1), (const __fp16 *) IN_PTR(2),
+                           (const __fp16 *) IN_PTR(3), qo_len, kv_len, n_heads, n_kv_heads, head_dim);
 
-          op_utils::compare_result((float *) OUT_PTR(0), ref_out, qo_size / 4);
+          op_utils::compare_result((float *) OUT_PTR(0), (float *) ref_out, qo_size / 4);
 
           validate_out_bufs();
 
           free(ref_out);
         } else {
           validate_in_bufs();
-          ret =
-            simple_flash_attn((__fp16 *) OUT_PTR(0), (__fp16 *) IN_PTR(0), (__fp16 *) IN_PTR(1), (__fp16 *) IN_PTR(2),
-                              (__fp16 *) IN_PTR(3), qo_len, kv_len, n_heads, n_kv_heads, head_dim);
+          ret = simple_flash_attn_hvx_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), (const __fp16 *) IN_PTR(1),
+                                          (const __fp16 *) IN_PTR(2), (const __fp16 *) IN_PTR(3), qo_len, kv_len,
+                                          n_heads, n_kv_heads, head_dim);
           validate_out_bufs();
         }
       }

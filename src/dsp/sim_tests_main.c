@@ -493,6 +493,9 @@ static int run_one_bias_add_silu_mul_fusion_test(const char *name, int ne0, int 
   const int warmup = 10;
   const int repeat = 20;
   int       rc     = 0;
+  uint64_t  add_cycles = 0;
+  uint64_t  silu_cycles = 0;
+  uint64_t  mpy_cycles = 0;
 
   for (int t = 0; t < warmup; ++t) {
     rc = hvx_bias_add_silu_mul_f32(dst_fused, src, bias, mul, ne0, ne1);
@@ -550,15 +553,21 @@ static int run_one_bias_add_silu_mul_fusion_test(const char *name, int ne0, int 
 
   p0 = HAP_perf_get_pcycles();
   for (int t = 0; t < repeat; ++t) {
+    uint64_t t0 = HAP_perf_get_pcycles();
     rc = hvx_add_f32(tmp0, src, bias_full, ne0, ne1);
+    add_cycles += HAP_perf_get_pcycles() - t0;
     if (rc != 0) {
       break;
     }
+    t0 = HAP_perf_get_pcycles();
     rc = hvx_silu_f32(tmp1, tmp0, ne0, ne1);
+    silu_cycles += HAP_perf_get_pcycles() - t0;
     if (rc != 0) {
       break;
     }
+    t0 = HAP_perf_get_pcycles();
     rc = hvx_mpy_f32(dst_unfused, tmp1, mul, ne0, ne1);
+    mpy_cycles += HAP_perf_get_pcycles() - t0;
     if (rc != 0) {
       break;
     }
@@ -614,6 +623,10 @@ static int run_one_bias_add_silu_mul_fusion_test(const char *name, int ne0, int 
   LOGF("%s: ne0=%d ne1=%d repeats=%d, fused_pcycles=%llu (avg %.2f), unfused_pcycles=%llu (avg %.2f), speedup=%.3fx",
        name, ne0, ne1, repeat, (unsigned long long) fused_cycles, fused_avg, (unsigned long long) unfused_cycles,
        unfused_avg, speedup);
+  LOGF("%s: unfused breakdown pcycles: add=%llu (avg %.2f), silu=%llu (avg %.2f), mpy=%llu (avg %.2f)", name,
+       (unsigned long long) add_cycles, (repeat > 0) ? ((double) add_cycles / (double) repeat) : 0.0,
+       (unsigned long long) silu_cycles, (repeat > 0) ? ((double) silu_cycles / (double) repeat) : 0.0,
+       (unsigned long long) mpy_cycles, (repeat > 0) ? ((double) mpy_cycles / (double) repeat) : 0.0);
   LOGF("%s: max_diff_fused=%g max_diff_unfused=%g failed_fused=%d failed_unfused=%d", name, max_diff_fused,
        max_diff_unfused, n_fail_fused, n_fail_unfused);
 

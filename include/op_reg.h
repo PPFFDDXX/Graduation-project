@@ -17,6 +17,7 @@ enum HtpOpsIndex {
   HTP_OPS_SOFTMAX_F32,
   HTP_OPS_GELU_F32,
   HTP_OPS_ROPE_F32,
+  HTP_OPS_ROPE_SCALE_ADD_F32,
   HTP_OPS_MAT_MUL_PERMUTED_W16A32,
   HTP_OPS_MAT_MUL_PERMUTED_W4D16A32,
   HTP_OPS_MAT_MUL_PERMUTED_W8D16A32,
@@ -81,4 +82,13 @@ struct UnaryElemwiseF32Params {
   struct RpcmemBufAddr src;
   int32_t       ne0;
   int32_t       ne1;
+} __attribute__((packed));
+
+struct RopeScaleAddF32Params {
+  struct RpcmemBufAddr dst;
+  struct RpcmemBufAddr src;
+  struct RpcmemBufAddr add;
+  int32_t              ne0;
+  int32_t              ne1;
+  float                scale;
 } __attribute__((packed));

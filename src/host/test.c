@@ -551,6 +551,23 @@ static void rope_f32_ref(float *dst, const float *src, int ne0, int ne1) {
   free(sin_table);
 }
 
+static void rope_scale_add_f32_ref(float *dst, const float *src, const float *add, int ne0, int ne1, float scale) {
+  const int n_elems = ne0 * ne1;
+  float    *tmp     = (float *) malloc((size_t) n_elems * sizeof(float));
+  if (!tmp) {
+    for (int i = 0; i < n_elems; ++i) {
+      dst[i] = src[i] * scale + add[i];
+    }
+    return;
+  }
+
+  rope_f32_ref(tmp, src, ne0, ne1);
+  for (int i = 0; i < n_elems; ++i) {
+    dst[i] = tmp[i] * scale + add[i];
+  }
+  free(tmp);
+}
+
 static void flash_attn_f32_ref(float *dst, const float *q, const __fp16 *k, const __fp16 *v, const __fp16 *mask,
                                int qo_len, int kv_len, int n_heads, int n_kv_heads, int head_dim) {
   const int   gqa_factor = n_heads / n_kv_heads;
@@ -896,6 +913,45 @@ static int run_bias_add_silu_mul_f32_op_chan(void *chan, int fd_dst, int fd_src,
   *(struct OpComputeRequest *) p = compute_req;
   p += sizeof(struct OpComputeRequest);
   *(struct BiasAddSiluMulF32Params *) p = params;
+
+  msg->state.v[0] = 1;
+  while (msg->state.v[1] != 1) {
+  }
+
+  return message_header_get_request_ptr(msg, 0)->state;
+}
+
+static int run_rope_scale_add_f32_op_chan(void *chan, int fd_dst, int fd_src, int fd_add, int ne0, int ne1, float scale) {
+  struct MessageHeader *msg = (struct MessageHeader *) chan;
+
+  struct RequestHeader req_hdr = {
+    .state = 0,
+    .type  = REQUEST_TYPE_OP_COMPUTE,
+  };
+  struct OpComputeRequest compute_req = {
+    .op = HTP_OPS_ROPE_SCALE_ADD_F32,
+  };
+  struct RopeScaleAddF32Params params = {
+    .dst   = { .fd = fd_dst, .offset = 0, },
+    .src   = { .fd = fd_src, .offset = 0, },
+    .add   = { .fd = fd_add, .offset = 0, },
+    .ne0   = ne0,
+    .ne1   = ne1,
+    .scale = scale,
+  };
+
+  size_t req_size     = sizeof(req_hdr) + sizeof(compute_req) + sizeof(params);
+  msg->state.d        = 0;
+  msg->n_reqs         = 1;
+  msg->req_offsets[0] = message_header_size(msg);
+  msg->req_offsets[1] = msg->req_offsets[0] + req_size;
+
+  uint8_t *p                  = (uint8_t *) message_header_get_request_ptr(msg, 0);
+  *(struct RequestHeader *) p = req_hdr;
+  p += sizeof(struct RequestHeader);
+  *(struct OpComputeRequest *) p = compute_req;
+  p += sizeof(struct OpComputeRequest);
+  *(struct RopeScaleAddF32Params *) p = params;
 
   msg->state.v[0] = 1;
   while (msg->state.v[1] != 1) {
@@ -1461,6 +1517,218 @@ end:
   fprintf(stderr, passed ? "bias_add_silu_mul_f32 compare passed\n" : "bias_add_silu_mul_f32 compare failed\n");
 }
 
+static void test_rope_scale_add_fusion_chan(void *chan, int ne0, int ne1) {
+  float *src = NULL, *add = NULL, *scale_full = NULL;
+  float *dsp_fused = NULL, *dsp_unfused = NULL, *tmp0 = NULL, *tmp1 = NULL, *ref = NULL;
+  int    fd_src = -1, fd_add = -1, fd_scale_full = -1;
+  int    fd_fused = -1, fd_unfused = -1, fd_tmp0 = -1, fd_tmp1 = -1;
+
+  const int   warmup   = 10;
+  const int   repeat   = 30;
+  const int   n_elems  = ne0 * ne1;
+  const float abs_tol  = 1e-2f;
+  const float rel_tol  = 1e-2f;
+  const float scale    = 1.0f / sqrtf((float) ne0);
+  int         passed   = 0;
+
+  size_t tensor_size = align_up((size_t) n_elems * sizeof(float), 128);
+
+  if (alloc_shared_mem_buf((void **) &src, &fd_src, tensor_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &add, &fd_add, tensor_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &scale_full, &fd_scale_full, tensor_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &dsp_fused, &fd_fused, tensor_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &dsp_unfused, &fd_unfused, tensor_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &tmp0, &fd_tmp0, tensor_size)) {
+    goto end;
+  }
+  if (alloc_shared_mem_buf((void **) &tmp1, &fd_tmp1, tensor_size)) {
+    goto end;
+  }
+
+  ref = (float *) malloc(tensor_size);
+  if (!ref) {
+    goto end;
+  }
+
+  for (int i = 0; i < n_elems; ++i) {
+    src[i]        = (rand() % 20000) * 2e-3f - 20.0f;
+    add[i]        = (rand() % 20000) * 1e-3f - 10.0f;
+    scale_full[i] = scale;
+  }
+
+  int err = 0;
+  for (int t = 0; t < warmup; ++t) {
+    err = run_rope_scale_add_f32_op_chan(chan, fd_fused, fd_src, fd_add, ne0, ne1, scale);
+    if (err != 0) {
+      fprintf(stderr, "rope_scale_add_f32 warmup(fused) failed with %x\n", err);
+      goto end;
+    }
+
+    err = run_unary_f32_op_chan(chan, HTP_OPS_ROPE_F32, fd_tmp0, fd_src, ne0, ne1);
+    if (err != 0) {
+      fprintf(stderr, "rope_scale_add_f32 warmup(rope) failed with %x\n", err);
+      goto end;
+    }
+    err = run_binary_f32_op_chan(chan, HTP_OPS_MPY_F32, fd_tmp1, fd_tmp0, fd_scale_full, ne0, ne1);
+    if (err != 0) {
+      fprintf(stderr, "rope_scale_add_f32 warmup(mpy) failed with %x\n", err);
+      goto end;
+    }
+    err = run_binary_f32_op_chan(chan, HTP_OPS_ADD_F32, fd_unfused, fd_tmp1, fd_add, ne0, ne1);
+    if (err != 0) {
+      fprintf(stderr, "rope_scale_add_f32 warmup(add) failed with %x\n", err);
+      goto end;
+    }
+  }
+
+  int64_t t0 = get_time_us();
+  for (int t = 0; t < repeat; ++t) {
+    err = run_rope_scale_add_f32_op_chan(chan, fd_fused, fd_src, fd_add, ne0, ne1, scale);
+    if (err != 0) {
+      fprintf(stderr, "rope_scale_add_f32 fused failed with %x\n", err);
+      goto end;
+    }
+  }
+  int64_t fused_elapsed_us = get_time_us() - t0;
+
+  t0 = get_time_us();
+  for (int t = 0; t < repeat; ++t) {
+    err = run_unary_f32_op_chan(chan, HTP_OPS_ROPE_F32, fd_tmp0, fd_src, ne0, ne1);
+    if (err != 0) {
+      fprintf(stderr, "rope_scale_add_f32 unfused(rope) failed with %x\n", err);
+      goto end;
+    }
+    err = run_binary_f32_op_chan(chan, HTP_OPS_MPY_F32, fd_tmp1, fd_tmp0, fd_scale_full, ne0, ne1);
+    if (err != 0) {
+      fprintf(stderr, "rope_scale_add_f32 unfused(mpy) failed with %x\n", err);
+      goto end;
+    }
+    err = run_binary_f32_op_chan(chan, HTP_OPS_ADD_F32, fd_unfused, fd_tmp1, fd_add, ne0, ne1);
+    if (err != 0) {
+      fprintf(stderr, "rope_scale_add_f32 unfused(add) failed with %x\n", err);
+      goto end;
+    }
+  }
+  int64_t unfused_elapsed_us = get_time_us() - t0;
+
+  int64_t cpu_t0 = get_time_us();
+  rope_scale_add_f32_ref(ref, src, add, ne0, ne1, scale);
+  int64_t cpu_elapsed_us = get_time_us() - cpu_t0;
+
+  int   n_failed_fused   = 0;
+  int   n_failed_unfused = 0;
+  float max_diff_fused   = 0.0f;
+  float max_diff_unfused = 0.0f;
+
+  for (int i = 0; i < n_elems; ++i) {
+    float d_f = fabsf(ref[i] - dsp_fused[i]);
+    float d_u = fabsf(ref[i] - dsp_unfused[i]);
+    if (d_f > max_diff_fused) {
+      max_diff_fused = d_f;
+    }
+    if (d_u > max_diff_unfused) {
+      max_diff_unfused = d_u;
+    }
+
+    if (!nearly_equal_f32(ref[i], dsp_fused[i], abs_tol, rel_tol)) {
+      n_failed_fused++;
+      if (n_failed_fused <= 8) {
+        fprintf(stderr, "rope_scale_add_f32 fused mismatch @%d: ref=%.6f dsp=%.6f\n", i, ref[i], dsp_fused[i]);
+      }
+    }
+    if (!nearly_equal_f32(ref[i], dsp_unfused[i], abs_tol, rel_tol)) {
+      n_failed_unfused++;
+      if (n_failed_unfused <= 8) {
+        fprintf(stderr, "rope_scale_add_f32 unfused mismatch @%d: ref=%.6f dsp=%.6f\n", i, ref[i], dsp_unfused[i]);
+      }
+    }
+  }
+
+  double fused_avg   = (repeat > 0) ? (double) fused_elapsed_us / (double) repeat : 0.0;
+  double unfused_avg = (repeat > 0) ? (double) unfused_elapsed_us / (double) repeat : 0.0;
+  double speedup     = (fused_elapsed_us > 0) ? ((double) unfused_elapsed_us / (double) fused_elapsed_us) : 0.0;
+
+  fprintf(stderr,
+          "rope_scale_add_f32 CHAN compare: fused=%ld us (avg %.2f), unfused=%ld us (avg %.2f), speedup=%.3fx\n",
+          fused_elapsed_us, fused_avg, unfused_elapsed_us, unfused_avg, speedup);
+  fprintf(stderr,
+          "rope_scale_add_f32 CPU(ref) took %ld us, max_diff_fused=%g, max_diff_unfused=%g, failed_fused=%d, "
+          "failed_unfused=%d\n",
+          cpu_elapsed_us, max_diff_fused, max_diff_unfused, n_failed_fused, n_failed_unfused);
+
+  passed = (n_failed_fused == 0 && n_failed_unfused == 0);
+
+end:
+  {
+    int map_fds[7];
+    int n_map = 0;
+    if (fd_fused >= 0) {
+      map_fds[n_map++] = fd_fused;
+    }
+    if (fd_unfused >= 0) {
+      map_fds[n_map++] = fd_unfused;
+    }
+    if (fd_tmp0 >= 0) {
+      map_fds[n_map++] = fd_tmp0;
+    }
+    if (fd_tmp1 >= 0) {
+      map_fds[n_map++] = fd_tmp1;
+    }
+    if (fd_src >= 0) {
+      map_fds[n_map++] = fd_src;
+    }
+    if (fd_add >= 0) {
+      map_fds[n_map++] = fd_add;
+    }
+    if (fd_scale_full >= 0) {
+      map_fds[n_map++] = fd_scale_full;
+    }
+    if (n_map > 0) {
+      int map_err = put_fd_maps_chan(chan, map_fds, n_map);
+      if (map_err != 0) {
+        fprintf(stderr, "rope_scale_add_f32: RPCMEM_MAP put failed with %x\n", map_err);
+      }
+    }
+  }
+
+  if (src) {
+    free_shared_mem_buf(src, fd_src, tensor_size);
+  }
+  if (add) {
+    free_shared_mem_buf(add, fd_add, tensor_size);
+  }
+  if (scale_full) {
+    free_shared_mem_buf(scale_full, fd_scale_full, tensor_size);
+  }
+  if (dsp_fused) {
+    free_shared_mem_buf(dsp_fused, fd_fused, tensor_size);
+  }
+  if (dsp_unfused) {
+    free_shared_mem_buf(dsp_unfused, fd_unfused, tensor_size);
+  }
+  if (tmp0) {
+    free_shared_mem_buf(tmp0, fd_tmp0, tensor_size);
+  }
+  if (tmp1) {
+    free_shared_mem_buf(tmp1, fd_tmp1, tensor_size);
+  }
+  if (ref) {
+    free(ref);
+  }
+
+  fprintf(stderr, passed ? "rope_scale_add_f32 compare passed\n" : "rope_scale_add_f32 compare failed\n");
+}
+
 static void test_mat_mul_rpc(remote_handle64 handle) {
   float *activation, *output;
   __fp16 *weight;
@@ -1580,6 +1848,7 @@ int main(int argc, char **argv) {
     test_unary_elemwise_f32_chan(chan, HTP_OPS_SOFTMAX_F32, ne0, ne1);
     test_unary_elemwise_f32_chan(chan, HTP_OPS_LAYER_NORM_F32, ne0, ne1);
     test_unary_elemwise_f32_chan(chan, HTP_OPS_ROPE_F32, ne0, ne1);
+    test_rope_scale_add_fusion_chan(chan, ne0, ne1);
   }
 
   struct FlashAttnTestCfg {

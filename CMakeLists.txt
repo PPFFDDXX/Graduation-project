@@ -109,6 +109,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/softmax.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/gelu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/rope.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/rope_scale_add.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/mat_mul.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/precompute_table.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/rms_norm.c
@@ -133,6 +134,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/softmax.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/gelu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/rope.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/rope_scale_add.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/flash_attn_hvx.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ops/layer_norm.c
     )
